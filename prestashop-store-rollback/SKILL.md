@@ -5,8 +5,13 @@ description: Restore a PrestaShop store to a previous backup. Use when the user 
 
 ## Requirements
 
-Find out what is the path to the module `autoupgrade`. It may be in a Docker container or behind a SSH session.
-* The commands are run with `[module_path]/bin/console`,
+Ask the user:
+* What is the path to the module `autoupgrade` from the store. It may be in a Docker container or behind a SSH session.
+* What is the admin folder name if you don't know it. It will be needed to run commands.
+
+## Usage:
+
+* The commands of Update Assistant are run with `[module_path]/bin/console`,
 * Commands details are provided by adding `--help` at the end.
 
 ## Steps
