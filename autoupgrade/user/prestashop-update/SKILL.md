@@ -1,5 +1,5 @@
 ---
-name: prestashop-store-update
+name: prestashop-update
 description: Update a PrestaShop store by using the Module Update Assistant. Use when the user asks to update a store or assess the compatibility with the newer versions of PrestaShop.
 ---
 

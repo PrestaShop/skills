@@ -1,5 +1,5 @@
 ---
-name: prestashop-store-check
+name: prestashop-update-check
 description: Check if a PrestaShop store is ready to be updated. Use when the user wants to assess compatibility or available versions without starting an update.
 ---
 

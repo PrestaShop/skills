@@ -1,5 +1,5 @@
 ---
-name: prestashop-store-rollback
+name: prestashop-restore
 description: Restore a PrestaShop store to a previous backup. Use when the user wants to rollback independently of an ongoing update.
 ---
 
