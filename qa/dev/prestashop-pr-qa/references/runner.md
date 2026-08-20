@@ -1,7 +1,8 @@
 # Running the browser
 
-Nothing in this skill is pre-installed. Each run writes `run.js` and `scenario.js` into
-`qa-out/pr-[number]/` and executes them. `run.js` is the same every time — copy it verbatim from
+Nothing in this skill is pre-installed. Each run writes `run.js` and `scenario.js` into the run
+directory — `~/prestashop-pr-qa/[owner]-[repo]-pr-[number]/`, outside the shop and outside every git
+work tree — and executes them there. `run.js` is the same every time — copy it verbatim from
 below. `scenario.js` is written fresh from the PR being tested.
 
 ## 1. Stand up Playwright without touching the project
@@ -302,7 +303,8 @@ module.exports = {
 };
 ```
 
-Run it once per phase, from `qa-out/pr-[number]/`:
+Run it once per phase, from the run directory (`cd "$RUN"`), so every relative path below stays
+inside it:
 
 ```bash
 node run.js --scenario=./scenario.js --phase=before --out=. --url="$FO_URL" --bo-url="$BO_URL"

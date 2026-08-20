@@ -26,7 +26,33 @@ Ask the user:
 
 * Two phases, always in this order: `before` (pre-fix code, where the bug must show) then `after` (the PR's code, where it must be gone). The order is a safety property, not a preference: database migrations, module upgrade scripts and new configuration keys only run forward, so testing the PR first leaves the `before` run reading an already-migrated database.
 * The **same** scenario script runs in both phases, unchanged.
-* Everything lands under `qa-out/pr-[number]/`:
+* Everything lands in a **run directory outside the shop**: `~/prestashop-pr-qa/[owner]-[repo]-pr-[number]/`. Never write artifacts into the shop, the theme, the module or any git working tree — a bind-mounted theme or module is both committable by accident and **served over HTTP**, which would publish the video and the screenshots. Confirm the choice before writing anything:
+
+```bash
+RUN="$HOME/prestashop-pr-qa/[owner]-[repo]-pr-[number]"
+mkdir -p "$RUN/env"
+RUN_REAL=$(cd "$RUN" && pwd -P)
+
+# Refuse if it sits inside the checkout under test or the shop's document root: the first gets
+# committed into the pull request, the second gets served over HTTP.
+for GUARD in "$CHECKOUT" "$SHOP_ROOT"; do
+  [ -d "$GUARD" ] || continue
+  case "$RUN_REAL/" in "$(cd "$GUARD" && pwd -P)"/*)
+    echo "refusing: $RUN_REAL is inside $GUARD"; exit 2 ;;
+  esac
+done
+
+# Inside any other git work tree — a dotfiles repository, say — is merely untidy: warn, continue.
+TOP=$(git -C "$RUN_REAL" rev-parse --show-toplevel 2>/dev/null) &&
+  echo "note: inside the git work tree $TOP — keep it out of commits"
+```
+
+  Tell the user the path up front, and again at the end so the files are findable when the comment
+  gets pasted. Do not use `$TMPDIR` for artifacts: the evidence has to outlive the session, because
+  it is attached to the pull request by hand. `$TMPDIR` is for the Playwright lab, which is
+  disposable.
+
+* The run directory holds:
 
 | Path | What it is |
 |:---|:---|
