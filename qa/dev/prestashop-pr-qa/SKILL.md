@@ -9,9 +9,12 @@ Run the pull request's own test steps against a shop that is already running, an
 happens. The deliverable is a report carrying a verdict — **approved**, **not approved** or **not
 reproducible**. The video and the screenshots exist to back up what it says.
 
-Division of labour: **this skill drives the browser, the developer drives the shop.** It never
-runs `git`, `composer`, `npm` or `cache:clear` against the store. It prints the commands, waits,
-then verifies the store really is in the state that was claimed.
+Division of labour: **the developer owns `git`; the skill owns everything downstream of it.**
+Changing which code is checked out is never the skill's call — it can destroy uncommitted work, and
+it is the developer's branch. Regenerating derived state from whatever code is present —
+`composer install`, the build, `cache:clear` — the skill offers to run itself, because the order
+matters and it knows it: rebuild first, read the canary second. Either way it verifies the shop is
+really in the claimed state before measuring anything.
 
 ## Requirements
 
@@ -60,6 +63,7 @@ TOP=$(git -C "$RUN_REAL" rev-parse --show-toplevel 2>/dev/null) &&
 | `scenario.js` | The script that was actually run, kept so anyone can repeat the run |
 | `run.js` | The phase runner, copied unchanged from `references/runner.md` |
 | `before/`, `after/` | `video.webm`, one `NN-slug.png` per step, and `phase.json` |
+| `comments/` | One file per GitHub target, each containing **only** what to paste there |
 | `env/` | PR metadata, the tokens the diff adds, and the canary readings |
 
 * Nothing is ever posted to GitHub. The comment is handed over for the user to paste.
@@ -68,15 +72,17 @@ TOP=$(git -C "$RUN_REAL" rev-parse --show-toplevel 2>/dev/null) &&
 
 - Read the PR: `gh pr view [number] --repo [owner/repo] --json title,body,baseRefName,headRefOid,files,closingIssuesReferences,labels`, then read every linked issue with `gh issue view`. Classify it as **bugfix** or **new feature**.
 - Find the test steps. In a PrestaShop PR body they sit in a table row whose label is not standardised — `How to test?`, `How to test`, sometimes missing entirely. Reproduction steps and the affected version usually live in the linked issue rather than the PR. If they exist in neither, derive them from the diff and **state in the report that they were inferred**.
+- Stop early if the diff changes nothing a browser can observe — CI configuration, documentation, tests only, a pure refactor with no behavioural change. Say which of those it is and that there is no browser verdict to give. Inventing steps for such a PR manufactures a verdict out of nothing.
 - Check whether the PR silently depends on another PR before blaming the code: a symbol the diff adds that exists nowhere in the shop is a missing dependency, not a defect. The probe is in `references/prestashop.md`.
 - Write the scenario from the **ticket's** steps first. Read the diff only afterwards, and only to find which page to open and whether a build is needed. One `step()` per test step. The template and the three assertion kinds are in `references/runner.md`.
 - Grep every bug assertion against the tokens the diff adds (`env/diff-added-tokens.txt`, recipe in `references/runner.md`). A bug assertion naming a class, id or attribute the PR introduces proves nothing: in the pre-fix state that selector is simply absent, the check fails, and the run claims a reproduction it never made. Rewrite it in the words of the ticket before running anything.
-- Show the scenario to the user. Then ask for the pre-fix state and wait (GATE). Print the exact commands and say why each one is needed — the merge-base is the true pre-fix state because the base branch tip carries other people's merges; `composer install --no-dev` is mandatory for modules because `vendor/` is not in git; the build is needed only if the diff touches compiled sources; `cache:clear` is needed for PHP, Twig and YAML changes. For a new feature there is nothing to reproduce: skip to the `after` phase.
+- Show the scenario to the user. Then ask for the pre-fix state and wait (GATE). Print the exact commands and say why each one is needed — the merge-base is the true pre-fix state because the base branch tip carries other people's merges; `composer install --no-dev` is mandatory for modules because `vendor/` is not in git; the build is needed only if the diff touches compiled sources; `cache:clear` is needed for PHP, Twig and YAML changes. Offer to run those three yourself, in the path the developer named, so the rebuild happens before the canary reading rather than after it; leave the `git` command to them. For a new feature there is nothing to reproduce: skip to the `after` phase.
 - Skip the `before` phase, saying why, when the diff touches something a code downgrade cannot undo: `install/upgrade/sql/`, `upgrade/upgrade-*.php`, `ALTER TABLE`, `ADD COLUMN`, or hook registration inside `install()`.
-- Take a canary reading, then run the `before` phase. The canary is `curl -s -L '[url]' | grep -c '[string the PR introduces]'` — curl has no cache, no service worker and no profile, so it reports what the server actually serves.
+- Take a canary reading, then run the `before` phase. The canary is `curl -s -L '[url]' | grep -c '[string the PR introduces]'` (for a back-office change it must be read in the browser instead — see `references/prestashop.md`) — curl has no cache, no service worker and no profile, so it reports what the server actually serves.
 - Ask for the PR's code and wait (GATE). Take a second canary reading, then run the `after` phase.
 - Compare the two canary readings. Identical readings mean the shop never changed state — a stale Symfony or Smarty cache, an untouched opcache, or a URL served from a different directory than the one that was switched. That is a harness error and there is no verdict; say so and stop.
 - Write `report.md`, applying the verdict table below. The scenario asserts; it must never decide the verdict.
+- Write `comments/` and tell the user the exact `pbcopy` command per target. Never post anything yourself.
 - Tell the user which state the shop was left in, and the command that returns it to where it started.
 - Name any fixture data or configuration change out loud before creating it (GATE), and list it in the report under what was added.
 
@@ -91,6 +97,7 @@ TOP=$(git -C "$RUN_REAL" rev-parse --show-toplevel 2>/dev/null) &&
 | bugfix | not attempted | a bug assertion fails | 🔴 not approved — the documented steps do not produce the documented result |
 | feature | n/a | all pass | 🟢 approved |
 | feature | n/a | any fails | 🔴 not approved |
+| any | n/a | n/a | ⚫ not applicable — the diff changes nothing a browser can observe |
 
 A check that fails in **both** phases is pre-existing: report it, do not hold it against the PR.
 
@@ -110,14 +117,44 @@ PR introduces.
 ### Report layout
 
 `report.md`, in this order: the verdict as the H1 with any caveat immediately under it; the
-environment (URLs, PrestaShop and PHP versions, the two states tested, the commands the developer
-ran, the Playwright and Chromium versions, the state the shop was left in); the classification and
+environment (URLs, PrestaShop and PHP versions, the two states tested, the commands run in each
+phase and who ran them, the Playwright and Chromium versions, the state the shop was left in); the classification and
 **where the steps came from**; reproduction; verification; the regression net, ending with the
 sentence `Regression coverage: smoke only.`; the honesty checks (script hash identical across
 phases, preconditions, canary readings, bug assertions referencing PR-introduced markup, flake
-re-samples); what was not tested; the verdict and one sentence of reasoning; a fenced
-ready-to-paste PR comment of at most 15 lines carrying no absolute paths and no credentials; and
-the artifact tree.
+re-samples); what was not tested; the verdict and one sentence of reasoning; a
+pointer to `comments/` for what to post; and the artifact tree.
+
+### What to post on GitHub
+
+`report.md` is for the person who ran the QA. It is not what goes on GitHub — it is too long, it
+carries local paths, and a fenced block inside it has to be hand-selected and un-indented before it
+can be pasted. Write the GitHub text as its own files instead:
+
+```text
+comments/
+├── index.md                          # what to post where, and in what order
+├── PrestaShop-hummingbird-1092.md    # paste this, whole, into that PR
+└── PrestaShop-PrestaShop-42356.md    # a second target only if the verdict covers it too
+```
+
+Rules for a file in `comments/`:
+
+* **Its entire content is the comment.** No surrounding fence, no report headings, nothing to trim. The user should be able to run `pbcopy < comments/[file].md` and paste, so tell them that command.
+* One file per GitHub target. Never one file that says "and post this part over there".
+* Named `[owner]-[repo]-[number].md`, so the target is unambiguous.
+* First line is the verdict. Second line is the standing disclaimer: `Note: AI-generated QA review. The tooling is still being tested — please sanity-check the verdict.`
+* No absolute paths, no run-directory paths, no credentials — the reader cannot see your disk.
+* Name the files to attach by hand, because images and video cannot be uploaded programmatically.
+* At most about 15 lines before the attachment line. The detail lives in `report.md`, which stays local.
+
+A second file is written **only** when the verdict genuinely covers another repository — a theme PR
+that needed a core PR applied alongside it, say. In that case each comment is written for its own
+readers: the theme PR's comment cannot assume they know about the core PR, and both must state that
+the result covers the combination rather than either PR alone.
+
+`index.md` lists each file with its target URL and one line on why it is being posted. With a single
+target it is one line long, and that is fine — it is the thing the user reads to know they are done.
 
 Reference screenshots paired by step index, so a reviewer can see both states of the same moment:
 

@@ -126,6 +126,27 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
       return put(rec.bugs, name, pass, detail);
     },
   };
+  // Every document navigation is preflighted automatically, whatever the scenario remembers to do:
+  // a 404, a redirect to the login form or a fatal page still returns a document that assertions
+  // would happily evaluate.
+  // Smoke visits record their own results in rec.smoke; a smoke miss belongs in the regression net,
+  // not in the preconditions, where it would void the verdict for the wrong reason.
+  let inSmoke = false;
+  const where = (u) => { try { return new URL(u).pathname; } catch (_) { return u; } };
+  page.on('response', (r) => {
+    if (inSmoke) return;
+    const req = r.request();
+    if (req.isNavigationRequest() && req.frame() === page.mainFrame() && r.status() >= 400) {
+      put(rec.preconditions, `navigation to ${where(r.url())} responded`, false, String(r.status()));
+    }
+  });
+  page.on('load', async () => {
+    if (inSmoke) return;
+    const body = await page.content().catch(() => '');
+    const hit = FATAL.exec(body);
+    if (hit) put(rec.preconditions, `${where(page.url())} is not an error page`, false, hit[0]);
+  });
+
   // A selector matching nothing makes every check pass. Count before you assert.
   const count = async (sel, o = {}) => {
     const min = o.min === undefined ? 1 : o.min;
@@ -185,6 +206,7 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
 
   // Fixed regression net. Not configurable: it is the floor under "we only tested the happy path".
   const smoke = async () => {
+    inSmoke = true;
     const visit = async (label, target) => {
       const r = await page.goto(target, { waitUntil: 'domcontentloaded' }).catch(() => null);
       await settle();
@@ -200,11 +222,18 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
     }
     await visit('cart', FO + '/index.php?controller=cart&action=show');
     if (BO) await visit('back office', BO);
+    inSmoke = false;
   };
 
   const startedAt = new Date().toISOString();
   await step('smoke: shop renders', smoke);
-  await scenario.run({ page, context, phase: PHASE, url: FO, boUrl: BO, step, assert, count, settle, loginBO, note, preflight });
+  // A scenario throwing between steps must not cost us the run: record it and carry on to the
+  // teardown, so phase.json and the video always exist.
+  try {
+    await scenario.run({ page, context, phase: PHASE, url: FO, boUrl: BO, step, assert, count, settle, loginBO, note, preflight });
+  } catch (e) {
+    rec.harness.push(`scenario threw outside a step: ${e.message}`);
+  }
 
   await page.waitForTimeout(800); // let the video end on a settled frame
   const video = page.video();
@@ -236,13 +265,23 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
   console.log(`${PHASE}: ${rec.steps.length} steps, preconditions ${f(rec.preconditions)} failed, `
     + `bug assertions ${f(rec.bugs)} failed, harness ${rec.harness.length}`);
   rec.harness.forEach((h) => console.log(`  harness: ${h}`));
-  process.exit(rec.harness.length ? 2 : 0);
-})().catch((e) => { console.error('HARNESS ERROR', e); process.exit(2); });
+  const preFailed = rec.preconditions.some((c) => !c.passed);
+  process.exit(rec.harness.length || preFailed ? 2 : 0);
+})().catch((e) => {
+  // Even a runner that dies leaves a machine-readable record: the report reads phase.json.
+  console.error('HARNESS ERROR', e);
+  try {
+    fs.writeFileSync(path.join(OUT, 'phase.json'), JSON.stringify(
+      { phase: PHASE, url: FO, outcome: 'harness', ...rec, harness: [...rec.harness, `runner failed: ${e.message}`] }, null, 2));
+  } catch (_) { /* nothing left to do */ }
+  process.exit(2);
+});
 ```
 
 The exit code says nothing about the PR: `0` means the phase ran cleanly, `2` means the harness
-could not produce trustworthy observations. Bug assertions failing in the `before` phase is the
-expected outcome, not an error.
+could not produce trustworthy observations — a harness fault, or a failed precondition, which voids
+the verdict just the same. Bug assertions failing in the `before` phase is the expected outcome, not
+an error, and does not change the exit code.
 
 Note what the script deliberately does **not** write into `phase.json`: its own argv. Credentials
 reach it only through the environment, and the report is a file people paste into GitHub.
@@ -346,16 +385,22 @@ filed the ticket would see.
 These are the ways a browser check reports success while proving nothing. Every one has been paid
 for at least once.
 
-- **A selector matching nothing makes every "is absent" check pass.** Assert the count first, always.
-- **A diff-derived selector fakes a reproduction.** In the pre-fix state, markup the PR adds is missing; the check fails and looks like the bug. Only user-visible symptoms prove a bug.
-- **Assertions run against the wrong page.** A 302 to the back-office login, a 404, a Whoops page or a maintenance banner all return a document that assertions happily evaluate. Preflight every entry navigation.
-- **`element.focus()` proves nothing** about keyboard access. Walk `Tab` from the top and see where focus lands.
-- **A focus ring read too early is not there yet.** Let transitions finish before measuring outline or box-shadow.
-- **`event.defaultPrevented` does not prove handling** on a native control — the browser may have acted anyway.
-- **An attribute without a visible effect is not a feature.** Assert the attribute *and* what the user sees.
+Four of them the runner now guarantees, so they are listed only so you know they are handled and
+do not need guarding again: a document navigation returning 400 or worse, or landing on a fatal
+page, is recorded as a failed precondition whether or not the scenario calls `preflight`;
+screenshots are taken after `settle()`; and the video is saved by name rather than by picking the
+newest file in the directory.
+
+The rest are yours. Nothing in the runner can prevent them, because they are choices made while
+writing assertions:
+
+- **A selector matching nothing makes every "is absent" check pass.** `count()` reports it, but only for selectors you actually pass through `count()`. A bare `page.locator()` is unguarded.
+- **A diff-derived selector fakes a reproduction.** In the pre-fix state, markup the PR adds is missing; the check fails and looks exactly like the bug. Only user-visible symptoms prove a bug.
+- **`element.focus()` proves nothing** about keyboard access. Walk `Tab` from the top and see where focus actually lands.
+- **A focus ring read too early is not there yet.** Let transitions finish before measuring outline or box-shadow — `step()` settles at its end, which does not help you mid-step.
+- **`event.defaultPrevented` does not prove handling** on a native control: the browser may have acted anyway.
+- **An attribute without a visible effect is not a feature.** Assert the attribute *and* what the user sees — the attribute alone belongs in `assert.detail`.
 - **Panel height is not visibility.** A drawer hidden by `transform` keeps its full height.
-- **An element's own `display` says nothing about a hidden ancestor.** Ask the browser whether it is actually visible.
-- **Icon-font glyphs live in the Unicode private use area** and are not visible text: they will not match a text assertion.
-- **Built assets and `vendor/` do not follow a git checkout.** A ref switch without a rebuild or a `composer install` means measuring one version's CSS against another's PHP.
-- **One video per page, not per phase.** Save it explicitly by name; never pick "the newest `.webm` in the directory".
-- **A screenshot taken before the page settles** photographs a spinner and gets filed as evidence.
+- **An element's own `display` says nothing about a hidden ancestor.** Ask the browser whether it is really visible.
+- **Icon-font glyphs live in the Unicode private use area** and are not visible text: they will never match a text assertion.
+- **Built assets and `vendor/` do not follow a git checkout.** For themes this is the norm rather than an edge case — see `prestashop.md`, "A theme's built assets do not follow a git checkout".

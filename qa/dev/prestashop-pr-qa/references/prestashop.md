@@ -2,17 +2,38 @@
 
 ## Where the code sits
 
-| PR is about | Code lives in | Needs a build when the diff touches |
-|:---|:---|:---|
-| Core | the shop root | `src/`, `admin-dev/themes/*/`, any `.scss` / `.ts` / `.vue` |
-| Module | `[shop]/modules/[name]/` | `_dev/`, `src/`, `views/_dev/` |
-| Theme | `[shop]/themes/[name]/` | `_dev/`, `.scss` |
-| Library / SDK | pulled in through composer or npm | whatever ships it |
+| PR is about | Code lives in | Build sources | Build command |
+|:---|:---|:---|:---|
+| Core | the shop root | `src/`, `admin-dev/themes/*/` | per workspace — there is no root `package.json` |
+| Module | `[shop]/modules/[name]/` | `_dev/`, `src/`, `views/_dev/` | at the module root or inside `_dev/` |
+| Theme — hummingbird | `[shop]/themes/hummingbird/` | `src/js`, `src/scss` (webpack, TypeScript) | `npm run build` at the theme root |
+| Theme — classic | `[shop]/themes/classic/` | `_dev/css`, `_dev/js` | `npm run build` inside `_dev/` |
+| Library / SDK | pulled in through composer or npm | whatever ships it | whatever ships it |
 
-`.tpl`, `.twig` and `.php` files never need a build. Anything under `src/` or `_dev/`, and every
-`.scss` or `.ts`, does. **Find the build rather than assuming it:** locate the `package.json` whose
-directory contains the changed files and read its `scripts`. The core has no root `package.json` —
-each workspace has its own. A module or a theme usually does.
+`.tpl`, `.twig` and `.php` need no build. Anything under `src/` or `_dev/`, and every `.scss` or
+`.ts`, does. **Find the build rather than assuming it:** locate the `package.json` whose directory
+contains the changed files and read its `scripts` — the theme root for hummingbird, `_dev/` for
+classic, and one per workspace in the core.
+
+### A theme's built assets do not follow a git checkout
+
+Both default themes gitignore their build output — `assets/` in hummingbird and in classic — so it
+is untracked. Switching git refs changes the sources and leaves the compiled CSS and JS exactly as
+they were.
+
+For a theme PR touching `src/` or `_dev/` that means:
+
+* the build must run **again in each phase**, or both phases serve byte-identical assets and the canary never flips;
+* worse, if the PR also touches a `.tpl`, the canary *will* flip on the template while the CSS and JS stay behind from the other phase. That mixed state reads exactly like a real measurement. Rebuild first, then take the canary reading.
+
+A PR touching only `templates/` needs no build: Smarty recompiles on mtime change.
+
+### A theme's composer.json is not a module's
+
+hummingbird ships a `composer.json`, but with an empty `require`, no `autoload` section, and only
+dev tooling in `require-dev` (`header-stamp`, `autoindex`). None of it is needed to serve the theme,
+so **a theme needs no `composer install`** — unlike a module, whose `vendor/` is absent from git and
+whose classes autoload through it.
 
 ## Making a change visible
 
@@ -20,6 +41,14 @@ each workspace has its own. A module or a theme usually does.
 * **Smarty templates** (`.tpl`) recompile themselves; nothing to do.
 * **opcache** is the silent one. With `opcache.validate_timestamps=0`, common in production-shaped containers, the new file lands on disk and never reaches the browser. If the canary refuses to move after a correct checkout and a cache clear, this is why: the PHP process has to be reloaded.
 * **The canary itself:** `curl -s -L '[url]' | grep -c '[string]'`. curl has no cache, no service worker and no browser profile, so it reports what the server actually serves. Take a reading in each phase. If the two readings are identical, the shop never changed state and no result from it means anything.
+
+**The back office cannot be canaried with `curl`.** An admin page needs an authenticated session,
+so `curl` receives the login form rather than the page under test, and the count is identically
+useless in both phases. Take the reading in the browser instead, after `loginBO()`: a Playwright
+context is created fresh for each phase, with an empty cache, no service worker and no profile, so
+a marker read out of the DOM is nearly as trustworthy as `curl`. Record it with `assert.detail` and
+quote both readings in the report. If no marker can be read at all, say the canary was
+unobtainable — never imply that it flipped.
 
 ## Modules
 
