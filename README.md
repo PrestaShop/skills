@@ -53,12 +53,19 @@ skills currently available:
 | `user`   | `prestashop-update`       | **prestashop-store-update**   | Update a PrestaShop store by using the Module Update Assistant. Evaluates compatibility and proceeds with the upgrade.                                                   |
 | `user`   | `prestashop-update-check` | **prestashop-store-check**    | Check if a PrestaShop store is ready to be updated. Assesses compatibility and available versions without starting the actual update.                                    |
 
+### Domain: `qa`
+
+| Category | Skill Folder         | Skill Name             | Description                                                                                                                                     |
+| -------- | -------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dev`    | `prestashop-pr-qa`   | **prestashop-pr-qa**   | QA a pull request in a real browser against a running shop: reproduce the bug, verify the fix, and report whether it is approved with video and screenshots as proof. |
+
 ## 🗂️ Repository Structure
 
 The repository is organized by **application domains**. Currently, the supported
 domains include:
 
 - [`autoupgrade`](#domain-autoupgrade) (Module Update Assistant)
+- [`qa`](#domain-qa) (Quality assurance on pull requests)
 
 _(More domains like core, specific modules, and themes will be added over
 time)._
@@ -82,6 +89,11 @@ PrestaShop/skills/
 │   │   ├── prestashop-restore/
 │   │   └── ...
 │   └── dev/              # Developer-facing skills
+├── qa/                   # Domain
+│   └── dev/
+│       └── prestashop-pr-qa/
+│           ├── SKILL.md
+│           └── references/   # Long knowledge, read on demand
 └── README.md             # This file
 ```
 
@@ -100,7 +112,11 @@ To create a new skill:
    ---
    ```
 4. Write the detailed, step-by-step instructions for the AI to follow in the rest of the markdown file.
-5. Open a Pull Request!
+5. Keep `SKILL.md` focused on what the AI needs to *decide*. If your skill carries long
+   knowledge it only needs in order to *execute* (command recipes, domain lore, code
+   templates), put it in a `references/` file next to `SKILL.md` and link to it from there,
+   so it is read on demand rather than loaded every time.
+6. Open a Pull Request!
 
 ### 📖 Helpful Resources for Building Skills
 
