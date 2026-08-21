@@ -1,5 +1,16 @@
 # What a PrestaShop shop does to your test
 
+## Contents
+
+* Where the code sits — core, module, theme, and what needs building
+* Making a change visible — caches, builds, opcache
+* Modules — `vendor/`, resetting the module
+* Back office — login, tokens, the admin folder
+* Themes — assets and `composer.json`
+* What a code downgrade cannot undo — one-way migrations
+* Reading the pull request — the test-steps row, the PR-dependency probe
+* Assessing files the merchant changed
+
 ## Where the code sits
 
 | PR is about | Code lives in | Build sources | Build command |

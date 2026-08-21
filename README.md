@@ -117,10 +117,15 @@ To create a new skill:
    knowledge it only needs in order to *execute* (command recipes, domain lore, code
    templates), put it in a `references/` file next to `SKILL.md` and link to it from there,
    so it is read on demand rather than loaded every time.
-6. Open a Pull Request!
+6. Ship code as code. If a step is deterministic, fragile, or must be identical every run
+   (a validation, a guard, a runner), put it in a `scripts/` file next to `SKILL.md` and tell the
+   AI to execute it by path. A long program pasted into markdown and retyped each run cannot be
+   linted, tested or diffed, and a single line retyped differently changes the result silently.
+7. Open a Pull Request!
 
 ### 📖 Helpful Resources for Building Skills
 
 If you are new to writing AI skills, here are some great resources and tutorials to help you understand how to write effective instructions for AI agents:
+- [Anthropic: Skill authoring best practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices) - The rules this repository follows: frontmatter limits, a `SKILL.md` body under 500 lines, progressive disclosure, references one level deep, and a checklist to run before opening a PR.
 - [Anthropic Cookbook: Custom Skills Development](https://platform.claude.com/cookbook/skills-notebooks-03-skills-custom-development) - A great tutorial on how to structure and develop custom skills.
 - [Vercel Labs Skills Repository](https://github.com/vercel-labs/skills) - The core engine that powers the `npx skills` command, containing examples and documentation on how the framework operates under the hood.

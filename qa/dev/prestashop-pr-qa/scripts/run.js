@@ -2,7 +2,7 @@
 // node <skill>/scripts/run.js --scenario=./scenario.js --phase=before|after --out=. --url=<fo> [--bo-url=<bo>]
 //
 // This file is the judge of a QA run: it decides what counts as a precondition, a bug assertion or
-// a harness fault. It is shipped, not retyped, and it is never edited for a run — scenario.js is
+// a harness error. It is shipped, not retyped, and it is never edited for a run — scenario.js is
 // the per-PR part. Its own hash goes into phase.json so a verdict can be traced to the exact
 // program that produced it, and so two phases judged by different programs cannot be compared.
 const fs = require('fs');
@@ -22,22 +22,38 @@ const PHASE = arg('phase');
 const OUT = path.resolve(arg('out', '.'), PHASE);
 const FO = (arg('url', '') || '').replace(/\/$/, '');
 const BO = (arg('bo-url', '') || '').replace(/\/$/, '');
-const VIEW = { width: 1280, height: 900 };
+// Viewports. Desktop is the default: it is wide enough for the back-office layout, which collapses
+// its columns below 1200px and would change what a scenario can see. A scenario whose ticket is
+// about mobile sets `viewport: 'mobile'` so the bug is measured where it was reported.
+// The two responsive widths are fixed, never derived from the PR, so both phases stay comparable:
+//   375 is the reference phone width (iPhone SE/12/13/14 and most Android in CSS pixels), so it is
+//       the width a merchant's customers actually browse at;
+//   768 is Bootstrap's `md` boundary, which PrestaShop themes are built on, so a layout that
+//       breaks exactly at the switch shows up there and nowhere else.
+const VIEWS = {
+  desktop: { width: 1280, height: 900 },
+  mobile: { width: 375, height: 812 },
+  tablet: { width: 768, height: 1024 },
+};
+const RESPONSIVE = ['mobile', 'tablet'];
 const HUD = '__qa_hud';
 const FATAL = /Fatal error|Whoops, looks like something went wrong|Uncaught \w*Exception|Service Unavailable/i;
 
 if (!PHASE || !FO) { console.error('--phase and --url are required'); process.exit(2); }
 fs.mkdirSync(OUT, { recursive: true });
 
-const rec = { preconditions: [], bugs: [], details: [], steps: [], smoke: [], consoleErrors: [], netErrors: [], harness: [], notes: [] };
+const rec = { preconditions: [], bugs: [], details: [], steps: [], smoke: [], responsive: [], consoleErrors: [], netErrors: [], harness: [], notes: [] };
 let stepNo = 0;
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 48);
 
 (async () => {
   const scenario = require(SCENARIO);
+  const VIEW = VIEWS[scenario.viewport] || VIEWS.desktop;
   const browser = await chromium.launch();
   const context = await browser.newContext({ viewport: VIEW, recordVideo: { dir: OUT, size: VIEW }, ignoreHTTPSErrors: true });
   const page = await context.newPage();
+  // 15s per action: a cold PrestaShop page with an empty Symfony cache regularly takes over 5s,
+  // and a timeout here is recorded as a harness error, so being generous costs nothing but time.
   page.setDefaultTimeout(15000);
   page.on('console', (m) => { if (m.type() === 'error') rec.consoleErrors.push({ step: stepNo, text: m.text() }); });
   page.on('pageerror', (e) => rec.consoleErrors.push({ step: stepNo, text: `pageerror: ${e.message}` }));
@@ -45,6 +61,8 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
 
   // Never a fixed delay in a scenario: this is the only place allowed to wait.
   const settle = async () => {
+    // networkidle can never arrive on a page that polls, so it is capped and the failure ignored:
+    // the two animation frames below are what actually guarantee a settled frame to measure.
     await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
     await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))).catch(() => {});
     await page.evaluate(() => Promise.all(document.getAnimations()
@@ -79,7 +97,7 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
     //            observed, so it stays a reproduction, flagged for the report to say intermittent.
     //   after  — the fix is in place and the first read was simply too early. The settled reading
     //            is the one that counts, so the phase passes.
-    // Neither is a harness fault. A flake is reported, never fatal: voiding a verdict because one
+    // Neither is a harness error. A flake is reported, never fatal: voiding a verdict because one
     // page was slow throws away a run that was valid, and calling it "ignored" while killing the
     // run was the worst of both.
     bug: async (name, cond, detail) => {
@@ -109,8 +127,13 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
       put(rec.preconditions, `navigation to ${where(r.url())} responded`, false, String(r.status()));
     }
   });
+  // Which front-office pages the scenario actually opened. The responsive net re-visits them, so it
+  // checks the pages this PR is about instead of a fixed list that may miss them entirely.
+  const visited = [];
   page.on('load', async () => {
     if (inSmoke) return;
+    const u = page.url();
+    if (u.startsWith(FO) && !visited.includes(u) && visited.length < 8) visited.push(u);
     const body = await page.content().catch(() => '');
     const hit = FATAL.exec(body);
     if (hit) put(rec.preconditions, `${where(page.url())} is not an error page`, false, hit[0]);
@@ -194,6 +217,63 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
     inSmoke = false;
   };
 
+  // Responsive net. Deliberately basic: it answers "does the shop still work narrow?", not "is the
+  // design good?". Three binary facts per page and width — the page responds, it renders something,
+  // it does not scroll sideways — so the net never produces a finding a human has to dismiss.
+  // It runs in BOTH phases, which is what lets the report tell a regression this PR introduced from
+  // a page that was already broken before it.
+  // Screenshots are taken either way: they are the evidence for everything a machine cannot judge.
+  const responsive = async () => {
+    inSmoke = true;                       // findings belong in the net, never in the preconditions
+    const targets = [FO + '/', ...visited.filter((u) => u !== FO + '/')].slice(0, 3);
+    for (const name of RESPONSIVE) {
+      await page.setViewportSize(VIEWS[name]);
+      for (const target of targets) {
+        const r = await page.goto(target, { waitUntil: 'domcontentloaded' }).catch(() => null);
+        await settle();
+        const fatal = FATAL.test(await page.content().catch(() => ''));
+        const m = await page.evaluate(() => {
+          // Does anything actually show? A media query that hides the layout at one width leaves a
+          // document that responds 200 and shows nothing. Check that `body` is really rendered
+          // FIRST: innerText falls back to textContent on an element that is not being rendered,
+          // so `body { display: none }` would otherwise read as full of text. No height threshold —
+          // a legitimately short page is not a bug. 20 characters is below any real shop page and
+          // above the stray label an emptied layout leaves behind.
+          const shown = !!document.body && document.body.getClientRects().length > 0
+            && getComputedStyle(document.body).display !== 'none';
+          const rendered = shown && (document.body.innerText || '').trim().length > 20;
+          const over = Math.round(document.documentElement.scrollWidth - window.innerWidth);
+          if (over <= 1) return { over: 0, worst: [], rendered };
+          // Advisory only: name a few visible boxes that stick out, to save the developer the hunt.
+          // `position: fixed` is skipped because a fixed element cannot create document overflow,
+          // so an off-canvas menu parked to the right is not what made the page scroll.
+          const worst = [...document.querySelectorAll('body *')].filter((el) => {
+            const st = getComputedStyle(el);
+            if (st.position === 'fixed' || st.visibility === 'hidden' || st.display === 'none') return false;
+            const b = el.getBoundingClientRect();
+            return b.width > 0 && b.height > 0 && b.right > window.innerWidth + 1;
+          }).slice(0, 3).map((el) => {
+            const cls = typeof el.className === 'string' && el.className.trim()
+              ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : '';
+            return el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + cls;
+          });
+          return { over, worst, rendered };
+        }).catch(() => ({ over: 0, worst: [], rendered: false }));
+        const shot = `${name}-${slug(where(target)) || 'home'}.png`;
+        await page.screenshot({ path: path.join(OUT, shot), fullPage: false }).catch(() => {});
+        const status = r ? r.status() : 0;
+        rec.responsive.push({
+          viewport: name, size: `${VIEWS[name].width}x${VIEWS[name].height}`, url: target,
+          status, responds: status > 0 && status < 400 && !fatal, rendered: m.rendered,
+          overflowPx: m.over, worst: m.worst, shot,
+          ok: status > 0 && status < 400 && !fatal && m.rendered && m.over === 0,
+        });
+      }
+    }
+    await page.setViewportSize(VIEW);
+    inSmoke = false;
+  };
+
   const startedAt = new Date().toISOString();
   await step('smoke: shop renders', smoke);
   // A scenario throwing between steps must not cost us the run: record it and carry on to the
@@ -204,7 +284,12 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
     rec.harness.push(`scenario threw outside a step: ${e.message}`);
   }
 
-  await page.waitForTimeout(800); // let the video end on a settled frame
+  await step('responsive: 375 and 768 wide', responsive);
+
+  // Playwright's video encoder trails the page by a few frames; without this the recording can end
+  // mid-transition. The video ends on the responsive pass, which is deliberate: the reviewer sees
+  // the narrow layouts being visited rather than having to trust the screenshots alone.
+  await page.waitForTimeout(800);
   const video = page.video();
   await context.close();
   if (video) {

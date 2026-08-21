@@ -1,81 +1,57 @@
-# Running the browser
+# The runner and the scenario
 
-Two files do the work, and they are not the same kind of thing. `run.js` **ships with the skill**
-at `scripts/run.js`: it is the invariant part, never edited for a run, and its hash is recorded in
-every result. `scenario.js` is written fresh from the PR being tested, into the run directory —
-`~/prestashop-pr-qa/[owner]-[repo]-pr-[number]/`, outside the shop and outside every git work tree.
-Playwright is the only thing that has to be installed, and it goes in a throwaway lab.
+## Contents
 
-## 1. Stand up Playwright without touching the project
+* Two files, two lifetimes
+* Running a phase
+* What a phase leaves behind
+* What a scenario is handed
+* Viewports and the responsive net
+* Bug assertions, and what a flake means
+* Exit codes
+* `scenario.js` — written fresh for each PR
+* The tokens the diff adds
+* Checks that pass for the wrong reason
 
-Playwright goes in a throwaway lab, never in the shop or in the repository being tested. Try what
-is already on the machine first: a launch probe is a better test than comparing browser revisions
-by hand, because it fails for the real reason.
+## Two files, two lifetimes
 
-```bash
-LAB="${TMPDIR:-/tmp}/ps-pr-qa-lab"
+| File | Where it lives | Lifetime |
+|:---|:---|:---|
+| `scripts/run.js` | ships with the skill | never edited for a run; its hash goes into every `phase.json` as `runnerSha256` |
+| `scenario.js` | written into the run directory | rewritten for every PR; its hash goes in as `scenarioSha256` |
 
-# Prefer a Playwright already present on the machine, with browsers that actually launch.
-for CAND in "$LAB/node_modules" "$HOME"/.npm/_npx/*/node_modules; do
-  [ -d "$CAND/playwright" ] || continue
-  if NODE_PATH="$CAND" node -e "require('playwright').chromium.launch().then(b=>b.close())" 2>/dev/null; then
-    export NODE_PATH="$CAND"; break
-  fi
-done
+`run.js` records; it does not judge. It knows nothing about "approved". Keeping the judge fixed and
+the scenario variable is what makes two phases comparable: if either hash differs between them, they
+were not the same experiment, and there is no verdict.
 
-# Nothing usable: install into the lab, and check the exit status of both commands.
-if [ -z "$NODE_PATH" ]; then
-  mkdir -p "$LAB"
-  ( cd "$LAB" && npm init -y >/dev/null && npm i playwright --no-audit --no-fund ) \
-    || { echo "playwright install failed"; exit 2; }
-  ( cd "$LAB" && npx playwright install chromium ffmpeg ) \
-    || { echo "browser install failed"; exit 2; }
-  export NODE_PATH="$LAB/node_modules"
-fi
+## Running a phase
 
-node -e "console.log('playwright', require('playwright/package.json').version)"
-```
-
-Keep every `cd` inside a subshell — a bare `cd` would move the session out of the repository and
-break the `git` and `gh` commands that follow.
-
-Run headless. The bundled headless shell needs no download on a machine that has ever run
-Playwright, and video recording works headless. `--headed` needs the full Chromium build, which is
-often absent: if the user wants to watch, print `npx playwright install chromium` and let them
-decide, rather than starting a download on their machine unannounced.
-
-## 2. `run.js` — one phase, no verdict
-
-`run.js` ships with the skill, at `scripts/run.js` next to `SKILL.md`. It records; it does not
-judge — it knows nothing about "approved". Two rules about it:
-
-* **It is never edited for a run, and never copied into the run directory.** `scenario.js` is the
-  per-PR part; `run.js` is the invariant one. One of the two changes, the other does not.
-* **Its hash goes into every `phase.json`** as `runnerSha256`, beside the scenario's. Two phases
-  judged by different programs cannot be compared, and a verdict stays traceable to the exact code
-  that produced it.
-
-Locate it once, before the first phase. Invoke it through `node` and a full path: do not expect the
-file to be executable, because an installer may well write it without the execute bit.
+Playwright is the only dependency. `scripts/playwright-lab.sh` reuses one already on the machine or
+installs one into a throwaway lab under `$TMPDIR` — never into the shop or the repository, where a
+`node_modules/` would end up in a pull request.
 
 ```bash
-# The copy shipped with this skill, in the directory this skill was read from.
-RUNNER="[the directory this skill was read from]/scripts/run.js"
-[ -f "$RUNNER" ] || RUNNER=$(find "$HOME/.agents/skills" "$HOME/.claude/skills" .agents/skills .claude/skills \
-  -maxdepth 4 -path '*prestashop-pr-qa/scripts/run.js' 2>/dev/null | head -1)
-[ -f "$RUNNER" ] || { echo "refusing: scripts/run.js not found — the skill is installed incompletely"; exit 2; }
-node -e '' 2>/dev/null || { echo "refusing: node is not on PATH"; exit 2; }
-echo "runner $RUNNER sha256 $(shasum -a 256 "$RUNNER" | cut -d' ' -f1)"
+NODE_PATH=$(sh "$SKILL_DIR/scripts/playwright-lab.sh"); export NODE_PATH
+
+cd "$RUN"   # every relative path below then stays inside the run directory
+node "$SKILL_DIR/scripts/run.js" --scenario=./scenario.js --phase=before --out=. \
+  --url="$FO_URL" --bo-url="$BO_URL"
 ```
 
-Then once per phase, from the run directory (`cd "$RUN"`), so every relative path stays inside it:
+Three things worth knowing about that command:
 
-```bash
-node "$RUNNER" --scenario=./scenario.js --phase=before --out=. --url="$FO_URL" --bo-url="$BO_URL"
-node "$RUNNER" --scenario=./scenario.js --phase=after  --out=. --url="$FO_URL" --bo-url="$BO_URL"
-```
+* `--out=.` is the run directory. The runner appends the phase name itself, so `--phase=before`
+  writes into `before/`. Passing `--out=./before` would nest it twice.
+* Invoke it with `node` and a path, never as an executable: an installer may write the file without
+  the execute bit.
+* Run headless. Video recording works headless, and `--headed` needs the full Chromium build, which
+  is often absent. If the user wants to watch, print `npx playwright install chromium` and let them
+  decide rather than starting a download on their machine unannounced.
 
-### What a phase leaves behind
+Keep every `cd` inside a subshell when you are not in the run directory for good: a bare `cd` moves
+the session out of the repository and breaks the `git` and `gh` commands that follow.
+
+## What a phase leaves behind
 
 `video.webm`, one `NN-slug.png` per step taken after the page settled, and `phase.json`:
 
@@ -88,6 +64,7 @@ node "$RUNNER" --scenario=./scenario.js --phase=after  --out=. --url="$FO_URL" -
 | `details` | `assert.detail` results. Information, never proof |
 | `steps` | one row per `step()`: number, name, screenshot, duration, and how many console or network problems appeared during it |
 | `smoke` | the fixed regression net: front page, a product page, the cart, the back office |
+| `responsive` | one row per page per narrow viewport: `responds`, `rendered`, `overflowPx`, the boxes that stick out, and a screenshot |
 | `consoleErrors`, `netErrors` | everything the page reported, whether the scenario looked or not |
 | `notes` | what the run wants the report to say out loud, flakes included |
 | `harness` | faults that void the verdict |
@@ -95,23 +72,57 @@ node "$RUNNER" --scenario=./scenario.js --phase=after  --out=. --url="$FO_URL" -
 `phase.json` deliberately does not carry the process argv. Credentials reach the runner only
 through `QA_BO_EMAIL` / `QA_BO_PASSWORD`, and the report is a file people paste into GitHub.
 
-### What a scenario is handed
+## What a scenario is handed
 
 `run({ page, context, phase, url, boUrl, step, assert, count, settle, loginBO, note, preflight })`:
 
 | Name | Contract |
 |:---|:---|
-| `step(name, fn)` | numbers the step, shows it in the video HUD, runs `fn`, settles, screenshots. A throw inside is a harness fault, not a failed PR |
+| `step(name, fn)` | numbers the step, shows it in the video HUD, runs `fn`, settles, screenshots. A throw inside is a harness error, not a failed PR |
 | `assert.ok(name, cond, detail)` | a precondition. It must hold in BOTH phases |
 | `assert.bug(name, cond, detail)` | the only thing that can prove the bug. `cond` and `detail` may be async functions — see below |
 | `assert.detail(name, cond, d)` | information only. Markup the PR adds belongs here, never in a bug assertion |
-| `count(sel, {min, max})` | asserts how many nodes a selector matches, and returns the locator. A selector matching nothing is a harness fault, not a passing "is absent" check |
+| `count(sel, {min, max})` | asserts how many nodes a selector matches, and returns the locator. A selector matching nothing is a harness error, not a passing "is absent" check |
 | `settle()` | waits for the network and the animations. Never `waitForTimeout` |
 | `preflight(resp, label)` | records a navigation's status and whether the body is a fatal page. Applied automatically to every document navigation |
 | `loginBO()` | logs into the back office with the environment credentials, then asserts that it worked |
 | `note(text)` | one line for the report |
 
-### Bug assertions, and what a flake means
+## Viewports and the responsive net
+
+A scenario runs at 1280×900 by default. When the ticket is about mobile — *"on my phone the menu
+does not close"* — declare it, so the bug is measured where it was reported:
+
+```js
+module.exports = { name: '...', kind: 'bugfix', where: 'fo', viewport: 'mobile', /* ... */ };
+```
+
+`viewport` accepts `desktop` (1280×900), `mobile` (375×812) or `tablet` (768×1024). It changes where
+the **bug assertion** is measured, nothing else.
+
+Independently of that, every phase ends with a **responsive net**: the front page plus up to two of
+the pages the scenario actually opened, re-visited at 375 and 768 wide. Two widths, always the same,
+never derived from the PR — that is what makes the two phases comparable.
+
+The question it answers is *does the shop still work narrow*, not *is the design good*. Three binary
+facts per page and width, and nothing else:
+
+| Field | True when |
+|:---|:---|
+| `responds` | the page returned under 400 and is not a fatal error page |
+| `rendered` | `body` is really being rendered and shows more than 20 characters of visible text. Catches a layout hidden at one width — a real mistake, and invisible on desktop |
+| `overflowPx` | 0. Above 0, the page scrolls sideways at that width |
+
+`ok` is all three at once. Each is mechanical, so the net never produces a finding a human has to
+dismiss. `worst` names up to three visible boxes that stick out, as a hint — `position: fixed`
+elements are skipped, because a fixed element cannot make the document scroll, so an off-canvas menu
+parked to the right of the viewport is not the culprit.
+
+A screenshot is taken at each width whether or not anything failed: everything a machine cannot
+judge — a cramped price, a two-line button, an image out of proportion — is judged by the reviewer
+looking at `mobile-*.png` and `tablet-*.png` side by side across the two phases.
+
+## Bug assertions, and what a flake means
 
 Pass `cond` as a function and a failure is re-sampled after settling rather than trusted at once.
 **Read the DOM inside that function.** A value captured before the call returns the same reading
@@ -125,17 +136,17 @@ What a flip means depends on the phase, and the runner does not treat the two al
 | `before` | the symptom appeared, then cleared: an **intermittent** reproduction | still a reproduction (`passed: false`), plus `flaky` and `intermittent`, plus a note |
 | `after` | the fix is in place and the first read was simply too early | the settled reading counts (`passed: true`), plus `flaky`, plus a note |
 
-Neither is a harness fault. A flake is reported, never fatal: voiding a verdict because one page
+Neither is a harness error. A flake is reported, never fatal: voiding a verdict because one page
 was slow throws away a run that was valid.
 
-### Exit codes
+## Exit codes
 
 The exit code says nothing about the PR. `0` means the phase ran cleanly. `2` means the harness
-could not produce trustworthy observations — a harness fault, or a failed precondition, which voids
+could not produce trustworthy observations — a harness error, or a failed precondition, which voids
 the verdict just the same. Bug assertions failing in the `before` phase is the expected outcome,
 not an error, and does not change it. Neither does a flake.
 
-## 3. `scenario.js` — written fresh for each PR
+## `scenario.js` — written fresh for each PR
 
 ```js
 /**
@@ -196,7 +207,7 @@ module.exports = {
 };
 ```
 
-## 4. The tokens the diff adds
+## The tokens the diff adds
 
 Used to catch a bug assertion that only restates the diff:
 
