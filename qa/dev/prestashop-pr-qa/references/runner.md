@@ -1,9 +1,10 @@
 # Running the browser
 
-Nothing in this skill is pre-installed. Each run writes `run.js` and `scenario.js` into the run
-directory — `~/prestashop-pr-qa/[owner]-[repo]-pr-[number]/`, outside the shop and outside every git
-work tree — and executes them there. `run.js` is the same every time — copy it verbatim from
-below. `scenario.js` is written fresh from the PR being tested.
+Two files do the work, and they are not the same kind of thing. `run.js` **ships with the skill**
+at `scripts/run.js`: it is the invariant part, never edited for a run, and its hash is recorded in
+every result. `scenario.js` is written fresh from the PR being tested, into the run directory —
+`~/prestashop-pr-qa/[owner]-[repo]-pr-[number]/`, outside the shop and outside every git work tree.
+Playwright is the only thing that has to be installed, and it goes in a throwaway lab.
 
 ## 1. Stand up Playwright without touching the project
 
@@ -45,246 +46,94 @@ decide, rather than starting a download on their machine unannounced.
 
 ## 2. `run.js` — one phase, no verdict
 
-This script records; it does not judge. It knows nothing about "approved". Copy it as is.
+`run.js` ships with the skill, at `scripts/run.js` next to `SKILL.md`. It records; it does not
+judge — it knows nothing about "approved". Two rules about it:
 
-```js
-// run.js — one QA phase. Records what happened; decides nothing.
-// node run.js --scenario=./scenario.js --phase=before|after --out=. --url=<fo> [--bo-url=<bo>]
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
-const { chromium } = require('playwright');
+* **It is never edited for a run, and never copied into the run directory.** `scenario.js` is the
+  per-PR part; `run.js` is the invariant one. One of the two changes, the other does not.
+* **Its hash goes into every `phase.json`** as `runnerSha256`, beside the scenario's. Two phases
+  judged by different programs cannot be compared, and a verdict stays traceable to the exact code
+  that produced it.
 
-const arg = (n, d) => {
-  const hit = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`));
-  return hit === undefined ? d : hit.slice(n.length + 3);
-};
-const SCENARIO = path.resolve(arg('scenario', './scenario.js'));
-const PHASE = arg('phase');
-const OUT = path.resolve(arg('out', '.'), PHASE);
-const FO = (arg('url', '') || '').replace(/\/$/, '');
-const BO = (arg('bo-url', '') || '').replace(/\/$/, '');
-const VIEW = { width: 1280, height: 900 };
-const HUD = '__qa_hud';
-const FATAL = /Fatal error|Whoops, looks like something went wrong|Uncaught \w*Exception|Service Unavailable/i;
+Locate it once, before the first phase. Invoke it through `node` and a full path: do not expect the
+file to be executable, because an installer may well write it without the execute bit.
 
-if (!PHASE || !FO) { console.error('--phase and --url are required'); process.exit(2); }
-fs.mkdirSync(OUT, { recursive: true });
-
-const rec = { preconditions: [], bugs: [], details: [], steps: [], smoke: [], consoleErrors: [], netErrors: [], harness: [], notes: [] };
-let stepNo = 0;
-const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 48);
-
-(async () => {
-  const scenario = require(SCENARIO);
-  const browser = await chromium.launch();
-  const context = await browser.newContext({ viewport: VIEW, recordVideo: { dir: OUT, size: VIEW }, ignoreHTTPSErrors: true });
-  const page = await context.newPage();
-  page.setDefaultTimeout(15000);
-  page.on('console', (m) => { if (m.type() === 'error') rec.consoleErrors.push({ step: stepNo, text: m.text() }); });
-  page.on('pageerror', (e) => rec.consoleErrors.push({ step: stepNo, text: `pageerror: ${e.message}` }));
-  page.on('response', (r) => { if (r.status() >= 400) rec.netErrors.push({ step: stepNo, text: `${r.status()} ${r.url()}` }); });
-
-  // Never a fixed delay in a scenario: this is the only place allowed to wait.
-  const settle = async () => {
-    await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
-    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))).catch(() => {});
-    await page.evaluate(() => Promise.all(document.getAnimations()
-      .filter((a) => a.playState === 'running').map((a) => a.finished.catch(() => {})))).catch(() => {});
-  };
-  const hudOn = (t) => page.evaluate(([id, text]) => {
-    let el = document.getElementById(id);
-    if (!el) {
-      el = document.createElement('div');
-      el.id = id;
-      el.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:#101418;color:#fff;'
-        + 'font:14px/1.6 ui-monospace,monospace;padding:8px 14px;pointer-events:none';
-      document.documentElement.appendChild(el);
-    }
-    el.textContent = text;
-  }, [HUD, t]).catch(() => {});
-  const hudOff = () => page.evaluate((id) => { const e = document.getElementById(id); if (e) e.remove(); }, HUD).catch(() => {});
-
-  const put = (bucket, name, passed, detail, extra) => {
-    bucket.push({ step: stepNo, name, passed: !!passed, detail: detail === undefined ? null : String(detail), ...extra });
-    return !!passed;
-  };
-  const assert = {
-    ok: (name, cond, detail) => put(rec.preconditions, name, cond, detail),
-    detail: (name, cond, d) => put(rec.details, name, cond, d),
-    // A bug assertion may be a function so a failure can be re-sampled: a flip is a flake,
-    // not a reproduction. true means CORRECT behaviour was observed.
-    bug: async (name, cond, detail) => {
-      let pass = typeof cond === 'function' ? await cond() : cond;
-      if (!pass && typeof cond === 'function') {
-        await settle();
-        if (await cond()) {
-          rec.harness.push(`flaky bug assertion, ignored: ${name}`);
-          return put(rec.bugs, name, false, detail, { flaky: true });
-        }
-      }
-      return put(rec.bugs, name, pass, detail);
-    },
-  };
-  // Every document navigation is preflighted automatically, whatever the scenario remembers to do:
-  // a 404, a redirect to the login form or a fatal page still returns a document that assertions
-  // would happily evaluate.
-  // Smoke visits record their own results in rec.smoke; a smoke miss belongs in the regression net,
-  // not in the preconditions, where it would void the verdict for the wrong reason.
-  let inSmoke = false;
-  const where = (u) => { try { return new URL(u).pathname; } catch (_) { return u; } };
-  page.on('response', (r) => {
-    if (inSmoke) return;
-    const req = r.request();
-    if (req.isNavigationRequest() && req.frame() === page.mainFrame() && r.status() >= 400) {
-      put(rec.preconditions, `navigation to ${where(r.url())} responded`, false, String(r.status()));
-    }
-  });
-  page.on('load', async () => {
-    if (inSmoke) return;
-    const body = await page.content().catch(() => '');
-    const hit = FATAL.exec(body);
-    if (hit) put(rec.preconditions, `${where(page.url())} is not an error page`, false, hit[0]);
-  });
-
-  // A selector matching nothing makes every check pass. Count before you assert.
-  const count = async (sel, o = {}) => {
-    const min = o.min === undefined ? 1 : o.min;
-    const max = o.max === undefined ? Infinity : o.max;
-    const loc = page.locator(sel);
-    const n = await loc.count();
-    if (n < min || n > max) rec.harness.push(`selector matched ${n}, expected ${min}..${max === Infinity ? 'any' : max}: ${sel}`);
-    return loc;
-  };
-  const note = (t) => { rec.notes.push(t); };
-
-  const preflight = async (resp, label) => {
-    const status = resp ? resp.status() : 0;
-    assert.ok(`${label} responded`, status > 0 && status < 400, String(status || 'no response'));
-    const body = await page.content();
-    assert.ok(`${label} is not an error page`, !FATAL.test(body), FATAL.exec(body) ? FATAL.exec(body)[0] : 'clean');
-  };
-
-  const loginBO = async () => {
-    if (!BO) { rec.harness.push('the scenario needs the back office but --bo-url was not given'); return; }
-    const email = process.env.QA_BO_EMAIL;
-    const pass = process.env.QA_BO_PASSWORD;
-    if (!email || !pass) { rec.harness.push('QA_BO_EMAIL / QA_BO_PASSWORD are not set in the environment'); return; }
-    const resp = await page.goto(BO, { waitUntil: 'domcontentloaded' });
-    await settle();
-    if (await page.locator('input[name="passwd"]').count() > 0) {
-      // Fill and submit the real form: it carries a CSRF token, so a POST would be rejected.
-      await page.fill('input[name="email"]', email);
-      await page.fill('input[name="passwd"]', pass);
-      await Promise.all([page.waitForLoadState('domcontentloaded'), page.click('#submit_login, button[type="submit"]')]);
-      await settle();
-    }
-    await preflight(resp, 'back office');
-    assert.ok('back office is logged in', (await page.locator('input[name="passwd"]').count()) === 0, page.url());
-    assert.ok('back office token is valid', !/Invalid security token|Invalid token/i.test(await page.content()));
-  };
-
-  const step = async (name, fn) => {
-    stepNo += 1;
-    const n = String(stepNo).padStart(2, '0');
-    const before = rec.consoleErrors.length + rec.netErrors.length;
-    const t0 = Date.now();
-    await hudOn(`${PHASE} · ${n} ${name}`);
-    try {
-      await fn();
-      await settle();
-    } catch (e) {
-      rec.harness.push(`step ${n} "${name}" threw: ${e.message}`);
-    }
-    await hudOn(`${PHASE} · ${n} ${name}`);
-    const shot = `${n}-${slug(name)}.png`;
-    await hudOff();
-    await page.screenshot({ path: path.join(OUT, shot), fullPage: false }).catch(() => {});
-    await hudOn(`${PHASE} · ${n} ${name}`);
-    rec.steps.push({ n, name, shot, ms: Date.now() - t0, newProblems: rec.consoleErrors.length + rec.netErrors.length - before });
-  };
-
-  // Fixed regression net. Not configurable: it is the floor under "we only tested the happy path".
-  const smoke = async () => {
-    inSmoke = true;
-    const visit = async (label, target) => {
-      const r = await page.goto(target, { waitUntil: 'domcontentloaded' }).catch(() => null);
-      await settle();
-      const status = r ? r.status() : 0;
-      const clean = !FATAL.test(await page.content());
-      rec.smoke.push({ label, url: target, status, ok: status > 0 && status < 400 && clean });
-    };
-    await visit('front page', FO + '/');
-    const first = page.locator('a[href*="id_product"], .product-title a, .products a').first();
-    if (await first.count() > 0) {
-      const href = await first.getAttribute('href');
-      if (href) await visit('product page', new URL(href, FO + '/').toString());
-    }
-    await visit('cart', FO + '/index.php?controller=cart&action=show');
-    if (BO) await visit('back office', BO);
-    inSmoke = false;
-  };
-
-  const startedAt = new Date().toISOString();
-  await step('smoke: shop renders', smoke);
-  // A scenario throwing between steps must not cost us the run: record it and carry on to the
-  // teardown, so phase.json and the video always exist.
-  try {
-    await scenario.run({ page, context, phase: PHASE, url: FO, boUrl: BO, step, assert, count, settle, loginBO, note, preflight });
-  } catch (e) {
-    rec.harness.push(`scenario threw outside a step: ${e.message}`);
-  }
-
-  await page.waitForTimeout(800); // let the video end on a settled frame
-  const video = page.video();
-  await context.close();
-  if (video) {
-    await video.saveAs(path.join(OUT, 'video.webm')).catch((e) => rec.harness.push(`video: ${e.message}`));
-    await video.delete().catch(() => {}); // saveAs copies: drop the auto-named original
-  }
-  await browser.close();
-
-  const out = {
-    phase: PHASE,
-    scenarioName: scenario.name || null,
-    kind: scenario.kind || null,
-    where: scenario.where || 'fo',
-    bug: scenario.bug || null,
-    scenarioSha256: crypto.createHash('sha256').update(fs.readFileSync(SCENARIO)).digest('hex'),
-    url: FO,
-    boUrl: BO || null,
-    playwright: require('playwright/package.json').version,
-    viewport: VIEW,
-    startedAt,
-    finishedAt: new Date().toISOString(),
-    video: 'video.webm',
-    ...rec,
-  };
-  fs.writeFileSync(path.join(OUT, 'phase.json'), JSON.stringify(out, null, 2));
-  const f = (a) => a.filter((x) => !x.passed).length;
-  console.log(`${PHASE}: ${rec.steps.length} steps, preconditions ${f(rec.preconditions)} failed, `
-    + `bug assertions ${f(rec.bugs)} failed, harness ${rec.harness.length}`);
-  rec.harness.forEach((h) => console.log(`  harness: ${h}`));
-  const preFailed = rec.preconditions.some((c) => !c.passed);
-  process.exit(rec.harness.length || preFailed ? 2 : 0);
-})().catch((e) => {
-  // Even a runner that dies leaves a machine-readable record: the report reads phase.json.
-  console.error('HARNESS ERROR', e);
-  try {
-    fs.writeFileSync(path.join(OUT, 'phase.json'), JSON.stringify(
-      { phase: PHASE, url: FO, outcome: 'harness', ...rec, harness: [...rec.harness, `runner failed: ${e.message}`] }, null, 2));
-  } catch (_) { /* nothing left to do */ }
-  process.exit(2);
-});
+```bash
+# The copy shipped with this skill, in the directory this skill was read from.
+RUNNER="[the directory this skill was read from]/scripts/run.js"
+[ -f "$RUNNER" ] || RUNNER=$(find "$HOME/.agents/skills" "$HOME/.claude/skills" .agents/skills .claude/skills \
+  -maxdepth 4 -path '*prestashop-pr-qa/scripts/run.js' 2>/dev/null | head -1)
+[ -f "$RUNNER" ] || { echo "refusing: scripts/run.js not found — the skill is installed incompletely"; exit 2; }
+node -e '' 2>/dev/null || { echo "refusing: node is not on PATH"; exit 2; }
+echo "runner $RUNNER sha256 $(shasum -a 256 "$RUNNER" | cut -d' ' -f1)"
 ```
 
-The exit code says nothing about the PR: `0` means the phase ran cleanly, `2` means the harness
-could not produce trustworthy observations — a harness fault, or a failed precondition, which voids
-the verdict just the same. Bug assertions failing in the `before` phase is the expected outcome, not
-an error, and does not change the exit code.
+Then once per phase, from the run directory (`cd "$RUN"`), so every relative path stays inside it:
 
-Note what the script deliberately does **not** write into `phase.json`: its own argv. Credentials
-reach it only through the environment, and the report is a file people paste into GitHub.
+```bash
+node "$RUNNER" --scenario=./scenario.js --phase=before --out=. --url="$FO_URL" --bo-url="$BO_URL"
+node "$RUNNER" --scenario=./scenario.js --phase=after  --out=. --url="$FO_URL" --bo-url="$BO_URL"
+```
+
+### What a phase leaves behind
+
+`video.webm`, one `NN-slug.png` per step taken after the page settled, and `phase.json`:
+
+| Field | What it is |
+|:---|:---|
+| `phase`, `url`, `boUrl`, `viewport`, `playwright`, `startedAt`, `finishedAt` | the conditions of the measurement |
+| `scenarioSha256`, `runner`, `runnerSha256` | what ran, and which program judged it — the two hashes the report compares across phases |
+| `preconditions` | `assert.ok` results. One failure and the phase is unusable |
+| `bugs` | `assert.bug` results. `passed: true` means CORRECT behaviour was observed |
+| `details` | `assert.detail` results. Information, never proof |
+| `steps` | one row per `step()`: number, name, screenshot, duration, and how many console or network problems appeared during it |
+| `smoke` | the fixed regression net: front page, a product page, the cart, the back office |
+| `consoleErrors`, `netErrors` | everything the page reported, whether the scenario looked or not |
+| `notes` | what the run wants the report to say out loud, flakes included |
+| `harness` | faults that void the verdict |
+
+`phase.json` deliberately does not carry the process argv. Credentials reach the runner only
+through `QA_BO_EMAIL` / `QA_BO_PASSWORD`, and the report is a file people paste into GitHub.
+
+### What a scenario is handed
+
+`run({ page, context, phase, url, boUrl, step, assert, count, settle, loginBO, note, preflight })`:
+
+| Name | Contract |
+|:---|:---|
+| `step(name, fn)` | numbers the step, shows it in the video HUD, runs `fn`, settles, screenshots. A throw inside is a harness fault, not a failed PR |
+| `assert.ok(name, cond, detail)` | a precondition. It must hold in BOTH phases |
+| `assert.bug(name, cond, detail)` | the only thing that can prove the bug. `cond` and `detail` may be async functions — see below |
+| `assert.detail(name, cond, d)` | information only. Markup the PR adds belongs here, never in a bug assertion |
+| `count(sel, {min, max})` | asserts how many nodes a selector matches, and returns the locator. A selector matching nothing is a harness fault, not a passing "is absent" check |
+| `settle()` | waits for the network and the animations. Never `waitForTimeout` |
+| `preflight(resp, label)` | records a navigation's status and whether the body is a fatal page. Applied automatically to every document navigation |
+| `loginBO()` | logs into the back office with the environment credentials, then asserts that it worked |
+| `note(text)` | one line for the report |
+
+### Bug assertions, and what a flake means
+
+Pass `cond` as a function and a failure is re-sampled after settling rather than trusted at once.
+**Read the DOM inside that function.** A value captured before the call returns the same reading
+twice, so the re-sample proves nothing — that is the one mistake this API invites. `detail` may be
+a function too, so the report quotes the reading the verdict actually rests on.
+
+What a flip means depends on the phase, and the runner does not treat the two alike:
+
+| Phase | A flip means | Recorded as |
+|:---|:---|:---|
+| `before` | the symptom appeared, then cleared: an **intermittent** reproduction | still a reproduction (`passed: false`), plus `flaky` and `intermittent`, plus a note |
+| `after` | the fix is in place and the first read was simply too early | the settled reading counts (`passed: true`), plus `flaky`, plus a note |
+
+Neither is a harness fault. A flake is reported, never fatal: voiding a verdict because one page
+was slow throws away a run that was valid.
+
+### Exit codes
+
+The exit code says nothing about the PR. `0` means the phase ran cleanly. `2` means the harness
+could not produce trustworthy observations — a harness fault, or a failed precondition, which voids
+the verdict just the same. Bug assertions failing in the `before` phase is the expected outcome,
+not an error, and does not change it. Neither does a flake.
 
 ## 3. `scenario.js` — written fresh for each PR
 
@@ -293,7 +142,7 @@ reach it only through the environment, and the report is a file people paste int
  * QA scenario. The SAME file runs in both phases, unchanged — its hash is recorded in each
  * phase.json and a mismatch voids the verdict.
  *
- * Three rules, in order of importance:
+ * Four rules, in order of importance:
  *  1. assert.bug() is the ONLY thing that can prove the bug. Write it in the reporter's words.
  *     Never name a class, id, attribute or file the PR ADDS: in the pre-fix state it is absent,
  *     the check fails, and you would report a reproduction you never made.
@@ -301,6 +150,9 @@ reach it only through the environment, and the report is a file people paste int
  *     is unusable and there is no verdict — not a failed PR.
  *  3. Never branch on `phase` for an assertion. Branch on it only to create data the pre-fix
  *     code cannot create on its own, and say so with note().
+ *
+ *  4. Read the DOM INSIDE an assert.bug callback, never into a variable before the call. The
+ *     callback is re-sampled when it fails, and a captured value returns the same reading twice.
  *
  * Every selector goes through count(). No waitForTimeout: use settle().
  */
@@ -329,25 +181,19 @@ module.exports = {
     });
 
     await step('observe the symptom', async () => {
-      const shown = (await page.locator('<selector present in both phases>').first().innerText()).trim();
+      // Read inside the callbacks, never before them: assert.bug re-samples a failure, and a
+      // value captured beforehand hands it the same reading twice — a re-sample that cannot flip.
+      const read = async () => (await page.locator('<selector present in both phases>').first().innerText()).trim();
       await assert.bug(
         '<the symptom, in the words of the ticket>',
-        async () => shown === '<what a correct shop shows>',
-        `observed "${shown}"`,
+        async () => (await read()) === '<what a correct shop shows>',
+        async () => `observed "${await read()}"`,
       );
       assert.detail('<markup the PR introduces — information only>',
         (await page.locator('<the new selector>').count()) === 1);
     });
   },
 };
-```
-
-Run it once per phase, from the run directory (`cd "$RUN"`), so every relative path below stays
-inside it:
-
-```bash
-node run.js --scenario=./scenario.js --phase=before --out=. --url="$FO_URL" --bo-url="$BO_URL"
-node run.js --scenario=./scenario.js --phase=after  --out=. --url="$FO_URL" --bo-url="$BO_URL"
 ```
 
 ## 4. The tokens the diff adds

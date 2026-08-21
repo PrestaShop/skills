@@ -93,7 +93,8 @@ PrestaShop/skills/
 │   └── dev/
 │       └── prestashop-pr-qa/
 │           ├── SKILL.md
-│           └── references/   # Long knowledge, read on demand
+│           ├── references/   # Long knowledge, read on demand
+│           └── scripts/      # Code the skill runs, shipped rather than retyped
 └── README.md             # This file
 ```
 
