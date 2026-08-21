@@ -8,7 +8,8 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { chromium } = require('playwright');
+// playwright is required further down, once the arguments have been validated: a typo should print
+// one usage line, not a forty-line module stack trace from a dependency.
 
 const sha256 = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
 const RUNNER_SHA = sha256(__filename);
@@ -19,9 +20,24 @@ const arg = (n, d) => {
 };
 const SCENARIO = path.resolve(arg('scenario', './scenario.js'));
 const PHASE = arg('phase');
-const OUT = path.resolve(arg('out', '.'), PHASE);
 const FO = (arg('url', '') || '').replace(/\/$/, '');
 const BO = (arg('bo-url', '') || '').replace(/\/$/, '');
+
+// Validate before anything uses these. PHASE is checked against the two names it may take, not just
+// for being present: `--phase=Before` would otherwise flow through to the flake rule below, where
+// "is this the before phase" decides whether an intermittent symptom counts as a reproduction — a
+// one-character typo would silently invert a verdict.
+if (!PHASE || !FO) { console.error('usage: --phase=before|after --url=<front office> [--bo-url=<back office>] [--scenario=./scenario.js] [--out=.]'); process.exit(2); }
+if (PHASE !== 'before' && PHASE !== 'after') { console.error(`--phase must be "before" or "after", got "${PHASE}"`); process.exit(2); }
+const OUT = path.resolve(arg('out', '.'), PHASE);
+
+let chromium;
+try {
+  ({ chromium } = require('playwright'));
+} catch (e) {
+  console.error('playwright is not reachable. Run scripts/playwright-lab.sh and export the NODE_PATH it prints.');
+  process.exit(2);
+}
 // Viewports. Desktop is the default: it is wide enough for the back-office layout, which collapses
 // its columns below 1200px and would change what a scenario can see. A scenario whose ticket is
 // about mobile sets `viewport: 'mobile'` so the bug is measured where it was reported.
@@ -39,7 +55,10 @@ const RESPONSIVE = ['mobile', 'tablet'];
 const HUD = '__qa_hud';
 const FATAL = /Fatal error|Whoops, looks like something went wrong|Uncaught \w*Exception|Service Unavailable/i;
 
-if (!PHASE || !FO) { console.error('--phase and --url are required'); process.exit(2); }
+// Empty the phase directory rather than trusting whoever called us to have done it: a leftover
+// screenshot from an earlier pass would be cited as this run's evidence, and the report cannot tell
+// the two apart. The runner owns its own output.
+fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
 
 const rec = { preconditions: [], bugs: [], details: [], steps: [], smoke: [], responsive: [], consoleErrors: [], netErrors: [], harness: [], notes: [] };
@@ -162,16 +181,29 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
     const email = process.env.QA_BO_EMAIL;
     const pass = process.env.QA_BO_PASSWORD;
     if (!email || !pass) { rec.harness.push('QA_BO_EMAIL / QA_BO_PASSWORD are not set in the environment'); return; }
-    const resp = await page.goto(BO, { waitUntil: 'domcontentloaded' });
+    let resp = await page.goto(BO, { waitUntil: 'domcontentloaded' });
     await settle();
+    await preflight(resp, 'back office');
     if (await page.locator('input[name="passwd"]').count() > 0) {
       // Fill and submit the real form: it carries a CSRF token, so a POST would be rejected.
       await page.fill('input[name="email"]', email);
       await page.fill('input[name="passwd"]', pass);
-      await Promise.all([page.waitForLoadState('domcontentloaded'), page.click('#submit_login, button[type="submit"]')]);
+      // `.first()` on purpose: the login page also renders the hidden password-reset form, whose
+      // submit button matches the same generic selector, and a locator resolving to two elements
+      // fails outright. Scoped to the login form first, generic only as a fallback.
+      const submit = page.locator('#submit_login, form#login_form button[type="submit"], form[name="login"] button[type="submit"]').first();
+      // Wait for the navigation the click starts. `waitForLoadState` would return at once, because
+      // the login page has already reached that state, and the assertions below would then read the
+      // pre-login document and record a failed precondition on an environment that was fine.
+      const [nav] = await Promise.all([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded' }).catch(() => null),
+        submit.click(),
+      ]);
+      // The real post-condition: the password field is gone. Cheap, and true on every version.
+      await page.locator('input[name="passwd"]').waitFor({ state: 'detached', timeout: 15000 }).catch(() => {});
       await settle();
+      if (nav) { resp = nav; await preflight(nav, 'back office login'); }
     }
-    await preflight(resp, 'back office');
     assert.ok('back office is logged in', (await page.locator('input[name="passwd"]').count()) === 0, page.url());
     assert.ok('back office token is valid', !/Invalid security token|Invalid token/i.test(await page.content()));
   };
@@ -199,6 +231,9 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
   // Fixed regression net. Not configurable: it is the floor under "we only tested the happy path".
   const smoke = async () => {
     inSmoke = true;
+    try { await smokeBody(); } finally { inSmoke = false; }
+  };
+  const smokeBody = async () => {
     const visit = async (label, target) => {
       const r = await page.goto(target, { waitUntil: 'domcontentloaded' }).catch(() => null);
       await settle();
@@ -214,7 +249,6 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
     }
     await visit('cart', FO + '/index.php?controller=cart&action=show');
     if (BO) await visit('back office', BO);
-    inSmoke = false;
   };
 
   // Responsive net. Deliberately basic: it answers "does the shop still work narrow?", not "is the
@@ -225,6 +259,9 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
   // Screenshots are taken either way: they are the evidence for everything a machine cannot judge.
   const responsive = async () => {
     inSmoke = true;                       // findings belong in the net, never in the preconditions
+    try { await responsiveBody(); } finally { inSmoke = false; await page.setViewportSize(VIEW); }
+  };
+  const responsiveBody = async () => {
     const targets = [FO + '/', ...visited.filter((u) => u !== FO + '/')].slice(0, 3);
     for (const name of RESPONSIVE) {
       await page.setViewportSize(VIEWS[name]);
@@ -242,7 +279,11 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
           const shown = !!document.body && document.body.getClientRects().length > 0
             && getComputedStyle(document.body).display !== 'none';
           const rendered = shown && (document.body.innerText || '').trim().length > 20;
-          const over = Math.round(document.documentElement.scrollWidth - window.innerWidth);
+          // clientWidth, not innerWidth: innerWidth includes a classic scrollbar where the browser
+          // renders one, which would hide an overflow smaller than the scrollbar. Same measure as
+          // the layout, so the comparison is exact.
+          const vw = document.documentElement.clientWidth;
+          const over = Math.round(document.documentElement.scrollWidth - vw);
           if (over <= 1) return { over: 0, worst: [], rendered };
           // Advisory only: name a few visible boxes that stick out, to save the developer the hunt.
           // `position: fixed` is skipped because a fixed element cannot create document overflow,
@@ -251,7 +292,7 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
             const st = getComputedStyle(el);
             if (st.position === 'fixed' || st.visibility === 'hidden' || st.display === 'none') return false;
             const b = el.getBoundingClientRect();
-            return b.width > 0 && b.height > 0 && b.right > window.innerWidth + 1;
+            return b.width > 0 && b.height > 0 && b.right > vw + 1;
           }).slice(0, 3).map((el) => {
             const cls = typeof el.className === 'string' && el.className.trim()
               ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : '';
@@ -259,7 +300,12 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
           });
           return { over, worst, rendered };
         }).catch(() => ({ over: 0, worst: [], rendered: false }));
-        const shot = `${name}-${slug(where(target)) || 'home'}.png`;
+        // The pathname alone collides: with friendly URLs off every page is /index.php, so two
+        // targets would write the same file and the report would show one page as evidence for two.
+        // Four hex characters of the full URL are enough to keep them apart and still readable.
+        const tag = target === FO + '/' ? 'home'
+          : `${slug(where(target)) || 'page'}-${crypto.createHash('sha256').update(target).digest('hex').slice(0, 4)}`;
+        const shot = `${name}-${tag}.png`;
         await page.screenshot({ path: path.join(OUT, shot), fullPage: false }).catch(() => {});
         const status = r ? r.status() : 0;
         rec.responsive.push({
@@ -270,8 +316,6 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
         });
       }
     }
-    await page.setViewportSize(VIEW);
-    inSmoke = false;
   };
 
   const startedAt = new Date().toISOString();

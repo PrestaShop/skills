@@ -14,11 +14,20 @@ command -v node >/dev/null 2>&1 || { say "node is not on PATH — install Node.j
 command -v npm  >/dev/null 2>&1 || { say "npm is not on PATH — install Node.js first"; exit 2; }
 LAB="${TMPDIR:-/tmp}/ps-pr-qa-lab"
 
-# A launch probe, not a version comparison: browsers can be missing or stale, and only launching
-# tells the truth. Try what the machine already has before downloading anything.
+# The probe records a one-frame video instead of only launching a browser. Launching proves Chromium
+# is there; it does not prove ffmpeg is, and ffmpeg is what records the video the report leans on. An
+# install that can launch but not record would fail at the very end of a two-phase run, after all
+# the work is paid for.
+PROBE='const {chromium}=require("playwright"),fs=require("fs"),os=require("os"),p=require("path");
+(async()=>{const d=fs.mkdtempSync(p.join(os.tmpdir(),"pw-probe-"));
+const b=await chromium.launch();const c=await b.newContext({recordVideo:{dir:d}});
+const pg=await c.newPage();await pg.goto("about:blank");await c.close();await b.close();
+const ok=fs.readdirSync(d).some(f=>f.endsWith(".webm")&&fs.statSync(p.join(d,f)).size>0);
+fs.rmSync(d,{recursive:true,force:true});process.exit(ok?0:1);})().catch(()=>process.exit(1));'
+
 for CAND in "$LAB/node_modules" "$HOME"/.npm/_npx/*/node_modules; do
   [ -d "$CAND/playwright" ] || continue
-  if NODE_PATH="$CAND" node -e "require('playwright').chromium.launch().then(b=>b.close())" 2>/dev/null; then
+  if NODE_PATH="$CAND" node -e "$PROBE" 2>/dev/null; then
     say "reusing the Playwright already installed in $CAND"
     echo "$CAND"; exit 0
   fi
@@ -32,6 +41,6 @@ mkdir -p "$LAB" || { say "cannot create $LAB"; exit 2; }
 ( cd "$LAB" && npx playwright install chromium ffmpeg >&2 ) \
   || { say "browser install failed"; exit 2; }
 
-NODE_PATH="$LAB/node_modules" node -e "require('playwright').chromium.launch().then(b=>b.close())" \
-  || { say "Playwright installed but Chromium does not launch"; exit 2; }
+NODE_PATH="$LAB/node_modules" node -e "$PROBE" \
+  || { say "Playwright installed but it cannot launch Chromium and record a video"; exit 2; }
 echo "$LAB/node_modules"

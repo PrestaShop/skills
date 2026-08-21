@@ -119,10 +119,12 @@ comment gets pasted. It holds:
 | `comments/` | one file per GitHub target, holding **only** what to paste there |
 | `env/` | PR metadata, the tokens the diff adds, the canary readings, the guarded paths |
 
-The run directory is **reused** across passes on the same PR; a phase directory is not. `rm -rf` the
-phase directory right before measuring it, so an earlier pass's video can never be read as this
-run's proof. Anything that survives is only evidence if its `phase.json` hashes match the
-`scenario.js` and `scripts/run.js` about to run — otherwise treat that phase as absent and say so.
+The run directory is **reused** across passes on the same PR; a phase directory is not. The runner
+empties `before/` or `after/` itself before measuring it, so an earlier pass's video can never be
+read as this run's proof — nothing to remember, and nothing to forget. Move a pass aside first
+(`mv before before-01`) if it is worth keeping. Whatever you do find in a phase directory is only
+evidence if its `phase.json` hashes match the `scenario.js` and `scripts/run.js` about to run;
+otherwise treat that phase as absent and say so.
 
 ### 3. Write scenario.js from the ticket's steps
 
@@ -162,11 +164,13 @@ report.
 ### 5. Measure the before phase
 
 ```bash
-rm -rf "$RUN/before"
 curl -s -L '[url]' | grep -c '[string the PR introduces]'   # the canary reading
-cd "$RUN" && node "$SKILL_DIR/scripts/run.js" \
-  --scenario=./scenario.js --phase=before --out=. --url="[FO URL]" --bo-url="[BO URL]"
+( cd "$RUN" && node "$SKILL_DIR/scripts/run.js" \
+    --scenario=./scenario.js --phase=before --out=. --url="[FO URL]" --bo-url="[BO URL]" )
 ```
+
+The `cd` stays inside a subshell: a bare `cd` moves the session out of the repository and breaks the
+`git` and `gh` commands in the steps that follow.
 
 `curl` has no cache, no service worker and no profile, so it reports what the server actually
 serves. A back-office change has to be read in the browser instead — see
@@ -178,7 +182,7 @@ Print the commands, wait, then take the second canary reading.
 
 ### 7. Measure the after phase
 
-Same as step 5 with `--phase=after`, then compare the two canary readings. **Identical readings mean
+Same as step 5 with `--phase=after` (the runner clears the directory itself), then compare the two canary readings. **Identical readings mean
 the shop never changed state** — a stale Symfony or Smarty cache, an untouched opcache, or a URL
 served from a different directory than the one that was switched. That is a harness error: say so
 and stop, with no verdict.

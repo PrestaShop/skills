@@ -72,7 +72,12 @@ printf '%s\n' "$GUARDS" > "$LIST"
 say "keeping the evidence out of:"; sed 's/^/  /' "$LIST" >&2
 while IFS= read -r G; do
   [ -d "$G" ] || continue
-  case "$RUN_REAL/" in "$(cd "$G" && pwd -P)"/*)
+  # Resolve first and check the result. A directory can pass -d and still refuse `cd` (a root-owned
+  # Docker mount source, say); the substitution would then be empty and the pattern would collapse
+  # to /*, which matches every absolute path and refuses everything with a nonsensical message.
+  GR=$(cd "$G" 2>/dev/null && pwd -P)
+  [ -n "$GR" ] || { say "note: cannot enter $G, so it could not be compared — keep the run directory well away from it"; continue; }
+  case "$RUN_REAL/" in "$GR"/*)
     rm -f "$LIST"; die "$RUN_REAL is inside $G" ;;
   esac
 done < "$LIST"

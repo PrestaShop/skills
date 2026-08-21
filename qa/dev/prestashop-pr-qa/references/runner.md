@@ -41,7 +41,8 @@ node "$SKILL_DIR/scripts/run.js" --scenario=./scenario.js --phase=before --out=.
 Three things worth knowing about that command:
 
 * `--out=.` is the run directory. The runner appends the phase name itself, so `--phase=before`
-  writes into `before/`. Passing `--out=./before` would nest it twice.
+  writes into `before/`. Passing `--out=./before` would nest it twice. It **empties** that phase
+  directory before measuring, so a screenshot from an earlier pass is never cited as this run's.
 * Invoke it with `node` and a path, never as an executable: an installer may write the file without
   the execute bit.
 * Run headless. Video recording works headless, and `--headed` needs the full Chromium build, which
@@ -140,6 +141,9 @@ Neither is a harness error. A flake is reported, never fatal: voiding a verdict 
 was slow throws away a run that was valid.
 
 ## Exit codes
+
+`--phase` accepts only `before` or `after`, and both it and `--url` are required: a typo exits 2
+before the browser starts rather than producing a run whose phase is neither.
 
 The exit code says nothing about the PR. `0` means the phase ran cleanly. `2` means the harness
 could not produce trustworthy observations — a harness error, or a failed precondition, which voids
