@@ -15,8 +15,14 @@ const sha256 = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).dig
 const RUNNER_SHA = sha256(__filename);
 
 const arg = (n, d) => {
-  const hit = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`));
-  return hit === undefined ? d : hit.slice(n.length + 3);
+  // Accept both `--name=value` and `--name value`: the second is what everyone types by reflex, and
+  // silently falling back to a default there is how a run ends up measuring the wrong directory.
+  const a = process.argv.slice(2);
+  const eq = a.find((x) => x.startsWith(`--${n}=`));
+  if (eq !== undefined) return eq.slice(n.length + 3);
+  const i = a.indexOf(`--${n}`);
+  if (i !== -1 && a[i + 1] !== undefined && !a[i + 1].startsWith('--')) return a[i + 1];
+  return d;
 };
 const SCENARIO = path.resolve(arg('scenario', './scenario.js'));
 const PHASE = arg('phase');
@@ -61,7 +67,7 @@ const FATAL = /Fatal error|Whoops, looks like something went wrong|Uncaught \w*E
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
 
-const rec = { preconditions: [], bugs: [], details: [], steps: [], smoke: [], responsive: [], consoleErrors: [], netErrors: [], harness: [], notes: [] };
+const rec = { preconditions: [], bugs: [], details: [], steps: [], smoke: [], responsive: [], clips: [], consoleErrors: [], netErrors: [], harness: [], notes: [] };
 let stepNo = 0;
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 48);
 
@@ -123,13 +129,17 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
       const said = async () => (typeof detail === 'function' ? await detail() : detail);
       const pass = typeof cond === 'function' ? await cond() : cond;
       if (pass || typeof cond !== 'function') return put(rec.bugs, name, pass, await said());
+      // Capture the failing observation before giving the page more time: in the before phase that
+      // reading IS the symptom, and quoting the settled one instead would print "symptom observed"
+      // next to the correct value, which reads as a contradiction in the report.
+      const firstSaid = await said().catch((err) => `detail unavailable: ${err.message}`);
       await settle();
       if (!(await cond())) return put(rec.bugs, name, false, await said());
       const intermittent = PHASE === 'before';
       rec.notes.push(intermittent
         ? `intermittent in before — the symptom appeared, then cleared on re-sample; kept as a reproduction: ${name}`
         : `flake in after — correct behaviour on re-sample; the settled reading counts: ${name}`);
-      return put(rec.bugs, name, !intermittent, await said(), { flaky: true, intermittent });
+      return put(rec.bugs, name, !intermittent, intermittent ? firstSaid : await said(), { flaky: true, intermittent });
     },
   };
   // Every document navigation is preflighted automatically, whatever the scenario remembers to do:
@@ -152,7 +162,10 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
   page.on('load', async () => {
     if (inSmoke) return;
     const u = page.url();
-    if (u.startsWith(FO) && !visited.includes(u) && visited.length < 8) visited.push(u);
+    // The back office sits under the front-office URL (…/admin-dev), so `startsWith(FO)` alone would
+    // send the responsive net to admin pages — where the URL carries a per-session token and a
+    // re-visit lands on the login form.
+    if (u.startsWith(FO) && (!BO || !u.startsWith(BO)) && !visited.includes(u) && visited.length < 8) visited.push(u);
     const body = await page.content().catch(() => '');
     const hit = FATAL.exec(body);
     if (hit) put(rec.preconditions, `${where(page.url())} is not an error page`, false, hit[0]);
@@ -206,6 +219,42 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
     }
     assert.ok('back office is logged in', (await page.locator('input[name="passwd"]').count()) === 0, page.url());
     assert.ok('back office token is valid', !/Invalid security token|Invalid token/i.test(await page.content()));
+  };
+
+  // The part of the page that changed is what a reader looks at; the rest is context. A scenario
+  // marks that region once and the runner clips it, at full size, in BOTH phases — the report then
+  // leads with the pair instead of two full pages where nothing is legible.
+  // Named clip(), not focus(): `element.focus()` already means something else in a browser, and a
+  // scenario author reading both in one file would have to guess which is which.
+  // The selector must exist in both phases, like a bug assertion: name the container, never the
+  // markup the PR adds. A miss is a note, never a harness error, because voiding a verdict over a
+  // missing screenshot would be worse than the missing screenshot.
+  const clip = async (sel, label) => {
+    const loc = page.locator(sel).first();
+    if (!(await loc.count().catch(() => 0))) { note(`clip: nothing matches ${sel}`); return; }
+    // Scroll first, then read the box. boundingBox() is viewport-relative and does not scroll, so a
+    // symptom below the fold yields a y beyond the viewport and the screenshot is rejected outright
+    // with "clipped area is either empty or outside the resulting image" — the lead evidence of the
+    // report would vanish into a note for every long page.
+    await loc.scrollIntoViewIfNeeded().catch(() => {});
+    await settle();
+    const box = await loc.boundingBox().catch(() => null);
+    if (!box) { note(`clip: ${sel} matched but has no box`); return; }
+    const pad = 24;   // a region read with no margin is hard to place on the page
+    const top = Math.max(0, box.y - pad);
+    const left = Math.max(0, box.x - pad);
+    const area = {
+      x: left, y: top,
+      width: Math.min(VIEW.width - left, box.width + pad * 2),
+      height: Math.min(VIEW.height - top, box.height + pad * 2),
+    };
+    const shot = `clip-${String(stepNo).padStart(2, '0')}-${slug(label || sel)}.png`;
+    // The HUD is fixed to the bottom of the viewport: without taking it down first it paints over
+    // any region low on the screen, in the one screenshot the report leads with.
+    await hudOff();
+    await page.screenshot({ path: path.join(OUT, shot), clip: area })
+      .then(() => rec.clips.push({ step: stepNo, label: label || sel, selector: sel, shot }))
+      .catch((e) => note(`clip: ${e.message}`));
   };
 
   const step = async (name, fn) => {
@@ -323,7 +372,7 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
   // A scenario throwing between steps must not cost us the run: record it and carry on to the
   // teardown, so phase.json and the video always exist.
   try {
-    await scenario.run({ page, context, phase: PHASE, url: FO, boUrl: BO, step, assert, count, settle, loginBO, note, preflight });
+    await scenario.run({ page, context, phase: PHASE, url: FO, boUrl: BO, step, assert, count, settle, loginBO, note, preflight, clip });
   } catch (e) {
     rec.harness.push(`scenario threw outside a step: ${e.message}`);
   }

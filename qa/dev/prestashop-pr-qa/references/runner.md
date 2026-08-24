@@ -7,6 +7,7 @@
 * What a phase leaves behind
 * What a scenario is handed
 * Viewports and the responsive net
+* Marking the region that matters
 * Bug assertions, and what a flake means
 * Exit codes
 * `scenario.js` — written fresh for each PR
@@ -65,6 +66,7 @@ the session out of the repository and breaks the `git` and `gh` commands that fo
 | `details` | `assert.detail` results. Information, never proof |
 | `steps` | one row per `step()`: number, name, screenshot, duration, and how many console or network problems appeared during it |
 | `smoke` | the fixed regression net: front page, a product page, the cart, the back office |
+| `clips` | one row per marked region: its label, its selector and the clipped screenshot |
 | `responsive` | one row per page per narrow viewport: `responds`, `rendered`, `overflowPx`, the boxes that stick out, and a screenshot |
 | `consoleErrors`, `netErrors` | everything the page reported, whether the scenario looked or not |
 | `notes` | what the run wants the report to say out loud, flakes included |
@@ -75,7 +77,7 @@ through `QA_BO_EMAIL` / `QA_BO_PASSWORD`, and the report is a file people paste 
 
 ## What a scenario is handed
 
-`run({ page, context, phase, url, boUrl, step, assert, count, settle, loginBO, note, preflight })`:
+`run({ page, context, phase, url, boUrl, step, assert, count, settle, loginBO, note, preflight, clip })`:
 
 | Name | Contract |
 |:---|:---|
@@ -88,6 +90,7 @@ through `QA_BO_EMAIL` / `QA_BO_PASSWORD`, and the report is a file people paste 
 | `preflight(resp, label)` | records a navigation's status and whether the body is a fatal page. Applied automatically to every document navigation |
 | `loginBO()` | logs into the back office with the environment credentials, then asserts that it worked |
 | `note(text)` | one line for the report |
+| `clip(selector, label)` | clips a screenshot of that region, at full size, so the report can lead with the part that changed instead of two full pages. Call it once, in the step where the symptom is visible |
 
 ## Viewports and the responsive net
 
@@ -122,6 +125,28 @@ parked to the right of the viewport is not the culprit.
 A screenshot is taken at each width whether or not anything failed: everything a machine cannot
 judge — a cramped price, a two-line button, an image out of proportion — is judged by the reviewer
 looking at `mobile-*.png` and `tablet-*.png` side by side across the two phases.
+
+## Marking the region that matters
+
+A full-page screenshot proves the run happened; it rarely shows the reader what changed. `clip()`
+takes one region and the report puts that pair first, with the whole page folded away behind it.
+
+```js
+await clip('<the container the symptom lives in, present in both phases>',
+           '<what that region is, in the words of the ticket>');
+```
+
+Two rules, both the same as for a bug assertion:
+
+* **The selector must exist in both phases.** Name the container the symptom lives in, never the
+  markup the PR adds — a region that only resolves in `after` gives a pair with nothing to compare.
+  When the PR makes an element appear, mark its parent, which exists either way.
+* **A miss is a note, not a harness error.** A missing screenshot is a worse reason to void a
+  verdict than the missing screenshot itself.
+
+The screenshot is the element plus 24px, so the region can be placed on the page at a glance. It lands in
+`phase.json` under `clips`. Call it once per run: the report leads with the first pair, and a page
+of clips is a contact sheet, not an argument.
 
 ## Bug assertions, and what a flake means
 
@@ -179,7 +204,7 @@ module.exports = {
   where: 'fo',             // 'fo' | 'bo' | 'both'
   bug: 'the user-visible symptom, in the reporter\'s words',
 
-  async run({ page, phase, url, step, assert, count, settle, loginBO, note, preflight }) {
+  async run({ page, phase, url, step, assert, count, settle, loginBO, note, preflight, clip }) {
     // await step('log in to the back office', async () => { await loginBO(); });
 
     await step('open the page from the ticket', async () => {
@@ -196,6 +221,8 @@ module.exports = {
     });
 
     await step('observe the symptom', async () => {
+      // Mark the region the report will lead with, before reading it.
+      await clip('<the container the symptom lives in>', '<what that region is>');
       // Read inside the callbacks, never before them: assert.bug re-samples a failure, and a
       // value captured beforehand hands it the same reading twice — a re-sample that cannot flip.
       const read = async () => (await page.locator('<selector present in both phases>').first().innerText()).trim();

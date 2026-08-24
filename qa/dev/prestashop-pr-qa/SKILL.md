@@ -1,6 +1,6 @@
 ---
 name: prestashop-pr-qa
-description: QAs a PrestaShop pull request in a real browser against a shop that is already running, and writes a report stating whether it is approved, with video and screenshots as proof. Use when the user says "QA this PR", "test this pull request", "check that this fix works", "reproduce this bug", "test this on mobile", "validate PR #123", or asks whether a pull request can be approved. Covers core, modules, themes and libraries, front office and back office, and checks the narrow viewports for layout regressions.
+description: QAs a PrestaShop pull request in a real browser against a shop that is already running, and writes an HTML report stating whether it is approved, with the video and screenshots as proof. Use when the user says "QA this PR", "test this pull request", "check that this fix works", "reproduce this bug", "test this on mobile", "validate PR #123", or asks whether a pull request can be approved. Covers core, modules, themes and libraries, front office and back office, and checks the narrow viewports for layout regressions.
 compatibility: Needs a PrestaShop shop already running and reachable over HTTP, an agent with shell access, node and npm (Playwright is installed into a temporary lab on first use), git, curl, and gh authenticated for the repository. Docker is optional — with it the directories the shop serves are detected from the URL, without it the developer is asked for them.
 ---
 
@@ -70,7 +70,7 @@ QA progress:
 - [ ] 5. Measure the before phase
 - [ ] 6. GATE: ask for the PR's code
 - [ ] 7. Measure the after phase
-- [ ] 8. Write report.md and comments/
+- [ ] 8. Write verdict.json, render report.html, write report.md and comments/
 ```
 
 ### 1. Read the PR and its linked issues
@@ -113,7 +113,9 @@ comment gets pasted. It holds:
 
 | Path | What it is |
 |:---|:---|
-| `report.md` | the deliverable: verdict, evidence, and a pointer to `comments/` |
+| `report.html` | **what the developer opens**: the verdict, the paired screenshots, the video, the comment to paste |
+| `verdict.json` | the judgement, machine-readable. The one place a verdict is written; both reports render it |
+| `report.md` | the same run in text, for grepping and for tickets that do not render HTML |
 | `scenario.js` | the script that was run, kept so anyone can repeat the run |
 | `before/`, `after/` | `video.webm`, one `NN-slug.png` per step, and `phase.json` |
 | `comments/` | one file per GitHub target, holding **only** what to paste there |
@@ -131,6 +133,10 @@ otherwise treat that phase as absent and say so.
 Write it from the **ticket's** steps first. Read the diff only afterwards, and only to find which
 page to open and whether a build is needed. One `step()` per test step. The template, the assertion
 kinds and the runner's API are in [references/runner.md](references/runner.md).
+
+Call `clip()` once, in the step where the symptom is visible, naming a container that exists in
+both phases. The report leads with that clipped pair, which is what makes it readable — see
+[references/runner.md](references/runner.md).
 
 If the ticket is about mobile, declare `viewport: 'mobile'` in the scenario, so the bug is measured
 at the width where it was reported — see [references/runner.md](references/runner.md).
@@ -187,10 +193,35 @@ the shop never changed state** — a stale Symfony or Smarty cache, an untouched
 served from a different directory than the one that was switched. That is a harness error: say so
 and stop, with no verdict.
 
-### 8. Write report.md and comments/
+### 8. Write the verdict, then the reports
 
-Apply the verdict table below. Then write `comments/`, tell the user the `pbcopy` command for each
-target, and tell them which state the shop was left in and the command that restores it.
+Apply the verdict table below, and write the judgement **once**, into `verdict.json`:
+
+```json
+{
+  "verdict": "approved | not-approved | not-reproducible | not-applicable",
+  "caveat": "the one sentence that qualifies the verdict, or omit",
+  "why": "one sentence of reasoning",
+  "pr": { "repo": "owner/repo", "number": 1234, "title": "…" },
+  "classification": "bugfix | feature",
+  "stepsFrom": "where the test steps came from, in words",
+  "shop": { "fo": "…", "bo": "…", "versions": "PrestaShop x, PHP y, theme z" },
+  "states": { "before": "merge base <sha>", "after": "PR head <sha>" },
+  "canary": { "before": 0, "after": 1 },
+  "notTested": ["…"],
+  "comment": "the exact text to paste on GitHub"
+}
+```
+
+Then render the page — it reads `verdict.json` and both `phase.json`, and invents nothing:
+
+```bash
+node "$SKILL_DIR/scripts/report.js" --run="$RUN"
+```
+
+Write `report.md` too, in the layout below: same facts, as text. Then write `comments/`, tell the
+user the `pbcopy` command for each target, where `report.html` is, and which state the shop was left
+in with the command that restores it.
 
 ## Verdict
 
@@ -255,6 +286,17 @@ Neither voids the verdict. `phase.json` marks both as `flaky: true`, and the `be
 | 🔴 | Blocker | Introduced by this PR. Not approved |
 | 🟡 | Warning | Pre-existing, or outside what was covered. Noted, does not block |
 | 🟢 | OK | Asserted and observed in the browser |
+
+## The two reports
+
+`report.html` is the deliverable the developer reads: one page, the verdict first, the paired
+screenshots and the video as evidence, the comment ready to copy. `scripts/report.js` renders it
+from `verdict.json` and the two `phase.json` — never by hand, so every run looks the same and the
+page cannot claim more than was measured. Its visual language is documented in
+[references/design.md](references/design.md).
+
+`report.md` is the same run written out as text: it greps, it diffs, and it survives being pasted
+into a tool that does not render HTML.
 
 ## report.md layout
 
@@ -335,5 +377,7 @@ both state that the result covers the combination rather than either PR alone.
 | [references/runner.md](references/runner.md) | the runner's API, the scenario template, the diff-token recipe, and the checks that pass for the wrong reason |
 | [references/prestashop.md](references/prestashop.md) | back-office login and tokens, caches, builds, module `vendor/`, one-way migrations, the PR-dependency probe |
 | `scripts/run.js` | runs one phase and records what happened. Executed, never edited for a run |
+| `scripts/report.js` | renders `report.html` from `verdict.json` and the two `phase.json`. Presents; never decides |
+| [references/design.md](references/design.md) | the colours, type, spacing and layout rules `report.js` inlines, and the three places a QA report has to depart from them |
 | `scripts/pick-run-dir.sh` | picks the run directory, refuses one that would leak the evidence |
 | `scripts/playwright-lab.sh` | finds or installs a working Playwright outside the shop |
