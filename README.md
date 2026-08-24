@@ -121,7 +121,12 @@ To create a new skill:
    (a validation, a guard, a runner), put it in a `scripts/` file next to `SKILL.md` and tell the
    AI to execute it by path. A long program pasted into markdown and retyped each run cannot be
    linted, tested or diffed, and a single line retyped differently changes the result silently.
-7. Open a Pull Request!
+7. Write the markdown one paragraph per line. No hard wrapping at 80 or 100 columns: editors soft
+   wrap on their own, and a hard wrap is undone by the next person whose editor reflows on save,
+   which produces a diff where nothing changed. Tables stay compact (`| a | b |`), never padded,
+   because a padded cell of prose runs past 400 characters. One blank line between blocks, never
+   two.
+8. Open a Pull Request!
 
 ### 📖 Helpful Resources for Building Skills
 

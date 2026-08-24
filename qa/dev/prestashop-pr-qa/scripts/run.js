@@ -1,42 +1,26 @@
-// run.js — one QA phase. Records what happened; decides nothing.
+// run.js: one QA phase, observed in a browser. Records what happened; decides nothing.
 // node <skill>/scripts/run.js --scenario=./scenario.js --phase=before|after --out=. --url=<fo> [--bo-url=<bo>]
 //
-// This file is the judge of a QA run: it decides what counts as a precondition, a bug assertion or
-// a harness error. It is shipped, not retyped, and it is never edited for a run — scenario.js is
-// the per-PR part. Its own hash goes into phase.json so a verdict can be traced to the exact
-// program that produced it, and so two phases judged by different programs cannot be compared.
+// This is one of three probes. record.js holds everything they share: what counts as a precondition,
+// what can prove a bug, what a flake means in each phase, and what phase.json looks like. This file
+// only knows how to look at an environment through Chromium, driven by Playwright.
+//
+// It is shipped, not retyped, and never edited for a run. scenario.js is the per-PR part. Both
+// hashes go into phase.json, so a verdict can be traced to the exact code that produced it and two
+// phases judged by different programs cannot be compared.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-// playwright is required further down, once the arguments have been validated: a typo should print
-// one usage line, not a forty-line module stack trace from a dependency.
+const { commonArgs, startPhase, slug } = require('./record.js');
 
-const sha256 = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
-const RUNNER_SHA = sha256(__filename);
-
-const arg = (n, d) => {
-  // Accept both `--name=value` and `--name value`: the second is what everyone types by reflex, and
-  // silently falling back to a default there is how a run ends up measuring the wrong directory.
-  const a = process.argv.slice(2);
-  const eq = a.find((x) => x.startsWith(`--${n}=`));
-  if (eq !== undefined) return eq.slice(n.length + 3);
-  const i = a.indexOf(`--${n}`);
-  if (i !== -1 && a[i + 1] !== undefined && !a[i + 1].startsWith('--')) return a[i + 1];
-  return d;
-};
-const SCENARIO = path.resolve(arg('scenario', './scenario.js'));
-const PHASE = arg('phase');
+const USAGE = 'usage: --phase=before|after --url=<front office> [--bo-url=<back office>] [--scenario=./scenario.js] [--out=.]';
+const { phase: PHASE, scenarioPath: SCENARIO, out: OUT, arg } = commonArgs(USAGE);
 const FO = (arg('url', '') || '').replace(/\/$/, '');
 const BO = (arg('bo-url', '') || '').replace(/\/$/, '');
+if (!FO) { console.error(USAGE); process.exit(2); }
 
-// Validate before anything uses these. PHASE is checked against the two names it may take, not just
-// for being present: `--phase=Before` would otherwise flow through to the flake rule below, where
-// "is this the before phase" decides whether an intermittent symptom counts as a reproduction — a
-// one-character typo would silently invert a verdict.
-if (!PHASE || !FO) { console.error('usage: --phase=before|after --url=<front office> [--bo-url=<back office>] [--scenario=./scenario.js] [--out=.]'); process.exit(2); }
-if (PHASE !== 'before' && PHASE !== 'after') { console.error(`--phase must be "before" or "after", got "${PHASE}"`); process.exit(2); }
-const OUT = path.resolve(arg('out', '.'), PHASE);
-
+// playwright is required once the arguments have been validated: a typo should print one usage line,
+// not a forty-line module stack trace from a dependency.
 let chromium;
 try {
   ({ chromium } = require('playwright'));
@@ -61,28 +45,17 @@ const RESPONSIVE = ['mobile', 'tablet'];
 const HUD = '__qa_hud';
 const FATAL = /Fatal error|Whoops, looks like something went wrong|Uncaught \w*Exception|Service Unavailable/i;
 
-// Empty the phase directory rather than trusting whoever called us to have done it: a leftover
-// screenshot from an earlier pass would be cited as this run's evidence, and the report cannot tell
-// the two apart. The runner owns its own output.
-fs.rmSync(OUT, { recursive: true, force: true });
-fs.mkdirSync(OUT, { recursive: true });
 
-const rec = { preconditions: [], bugs: [], details: [], steps: [], smoke: [], responsive: [], clips: [], consoleErrors: [], netErrors: [], harness: [], notes: [] };
-let stepNo = 0;
-const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 48);
-
+let R = null;   // hoisted so the crash handler below can still write phase.json
 (async () => {
   const scenario = require(SCENARIO);
   const VIEW = VIEWS[scenario.viewport] || VIEWS.desktop;
   const browser = await chromium.launch();
   const context = await browser.newContext({ viewport: VIEW, recordVideo: { dir: OUT, size: VIEW }, ignoreHTTPSErrors: true });
   const page = await context.newPage();
-  // 15s per action: a cold PrestaShop page with an empty Symfony cache regularly takes over 5s,
-  // and a timeout here is recorded as a harness error, so being generous costs nothing but time.
+  // 15s per action: a cold PrestaShop page with an empty Symfony cache regularly takes over 5s, and
+  // a timeout here is recorded as a harness error, so being generous costs nothing but time.
   page.setDefaultTimeout(15000);
-  page.on('console', (m) => { if (m.type() === 'error') rec.consoleErrors.push({ step: stepNo, text: m.text() }); });
-  page.on('pageerror', (e) => rec.consoleErrors.push({ step: stepNo, text: `pageerror: ${e.message}` }));
-  page.on('response', (r) => { if (r.status() >= 400) rec.netErrors.push({ step: stepNo, text: `${r.status()} ${r.url()}` }); });
 
   // Never a fixed delay in a scenario: this is the only place allowed to wait.
   const settle = async () => {
@@ -106,51 +79,50 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
   }, [HUD, t]).catch(() => {});
   const hudOff = () => page.evaluate((id) => { const e = document.getElementById(id); if (e) e.remove(); }, HUD).catch(() => {});
 
-  const put = (bucket, name, passed, detail, extra) => {
-    bucket.push({ step: stepNo, name, passed: !!passed, detail: detail === undefined ? null : String(detail), ...extra });
-    return !!passed;
-  };
-  const assert = {
-    ok: (name, cond, detail) => put(rec.preconditions, name, cond, detail),
-    detail: (name, cond, d) => put(rec.details, name, cond, d),
-    // A bug assertion may be a function, so a failure is re-sampled after settling rather than
-    // trusted at once. true means CORRECT behaviour was observed. `detail` may be a function too,
-    // so the report quotes the reading the verdict rests on and not an earlier one.
-    //
-    // What a flip means depends on the phase, and the two are not the same finding:
-    //   before — the symptom showed, then cleared. That is an INTERMITTENT reproduction: it was
-    //            observed, so it stays a reproduction, flagged for the report to say intermittent.
-    //   after  — the fix is in place and the first read was simply too early. The settled reading
-    //            is the one that counts, so the phase passes.
-    // Neither is a harness error. A flake is reported, never fatal: voiding a verdict because one
-    // page was slow throws away a run that was valid, and calling it "ignored" while killing the
-    // run was the worst of both.
-    bug: async (name, cond, detail) => {
-      const said = async () => (typeof detail === 'function' ? await detail() : detail);
-      const pass = typeof cond === 'function' ? await cond() : cond;
-      if (pass || typeof cond !== 'function') return put(rec.bugs, name, pass, await said());
-      // Capture the failing observation before giving the page more time: in the before phase that
-      // reading IS the symptom, and quoting the settled one instead would print "symptom observed"
-      // next to the correct value, which reads as a contradiction in the report.
-      const firstSaid = await said().catch((err) => `detail unavailable: ${err.message}`);
-      await settle();
-      if (!(await cond())) return put(rec.bugs, name, false, await said());
-      const intermittent = PHASE === 'before';
-      rec.notes.push(intermittent
-        ? `intermittent in before — the symptom appeared, then cleared on re-sample; kept as a reproduction: ${name}`
-        : `flake in after — correct behaviour on re-sample; the settled reading counts: ${name}`);
-      return put(rec.bugs, name, !intermittent, intermittent ? firstSaid : await said(), { flaky: true, intermittent });
+  // The browser probe hands the core three things: how to wait, how to end a step, and the fields
+  // only it can fill in. Everything else about recording is the core's business.
+  R = startPhase({
+    phase: PHASE, out: OUT, scenarioPath: SCENARIO,
+    probe: {
+      name: 'browser',
+      runnerFile: __filename,
+      settle,
+      // The HUD labels the step in the video, but it must not appear in the screenshot: it is
+      // fixed to the bottom of the viewport and would paint over the page. Down for the capture,
+      // back up straight after so the recording keeps its caption.
+      capture: async (n, name) => {
+        const shot = `${n}-${slug(name)}.png`;
+        await hudOff();
+        await page.screenshot({ path: path.join(OUT, shot), fullPage: false }).catch(() => {});
+        await hudOn(`${PHASE} \u00b7 ${n} ${name}`);
+        return shot;
+      },
+      meta: async () => ({
+        url: FO, boUrl: BO || null, viewport: VIEW, video: 'video.webm',
+        playwright: require('playwright/package.json').version,
+      }),
     },
-  };
+  });
+  const { rec, state, assert, step, note } = R;
+  const put = R.put;
+
+  page.on('console', (m) => { if (m.type() === 'error') rec.consoleErrors.push({ step: state.stepNo, text: m.text() }); });
+  page.on('pageerror', (e) => rec.consoleErrors.push({ step: state.stepNo, text: `pageerror: ${e.message}` }));
+  page.on('response', (r) => { if (r.status() >= 400) rec.netErrors.push({ step: state.stepNo, text: `${r.status()} ${r.url()}` }); });
+
   // Every document navigation is preflighted automatically, whatever the scenario remembers to do:
   // a 404, a redirect to the login form or a fatal page still returns a document that assertions
   // would happily evaluate.
   // Smoke visits record their own results in rec.smoke; a smoke miss belongs in the regression net,
   // not in the preconditions, where it would void the verdict for the wrong reason.
-  let inSmoke = false;
+  // True while the regression net is running, the smoke pass and the narrow viewports both. Its
+  // findings belong in rec.smoke and rec.responsive, where they are attributed by comparing the two
+  // phases. Letting them reach the preconditions instead would void the verdict over a page the
+  // ticket never mentioned.
+  let inRegressionNet = false;
   const where = (u) => { try { return new URL(u).pathname; } catch (_) { return u; } };
   page.on('response', (r) => {
-    if (inSmoke) return;
+    if (inRegressionNet) return;
     const req = r.request();
     if (req.isNavigationRequest() && req.frame() === page.mainFrame() && r.status() >= 400) {
       put(rec.preconditions, `navigation to ${where(r.url())} responded`, false, String(r.status()));
@@ -160,10 +132,10 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
   // checks the pages this PR is about instead of a fixed list that may miss them entirely.
   const visited = [];
   page.on('load', async () => {
-    if (inSmoke) return;
+    if (inRegressionNet) return;
     const u = page.url();
     // The back office sits under the front-office URL (…/admin-dev), so `startsWith(FO)` alone would
-    // send the responsive net to admin pages — where the URL carries a per-session token and a
+    // send the responsive net to admin pages, where the URL carries a per-session token and a
     // re-visit lands on the login form.
     if (u.startsWith(FO) && (!BO || !u.startsWith(BO)) && !visited.includes(u) && visited.length < 8) visited.push(u);
     const body = await page.content().catch(() => '');
@@ -180,7 +152,6 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
     if (n < min || n > max) rec.harness.push(`selector matched ${n}, expected ${min}..${max === Infinity ? 'any' : max}: ${sel}`);
     return loc;
   };
-  const note = (t) => { rec.notes.push(t); };
 
   const preflight = async (resp, label) => {
     const status = resp ? resp.status() : 0;
@@ -222,7 +193,7 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
   };
 
   // The part of the page that changed is what a reader looks at; the rest is context. A scenario
-  // marks that region once and the runner clips it, at full size, in BOTH phases — the report then
+  // marks that region once and the runner clips it, at full size, in BOTH phases, so the report
   // leads with the pair instead of two full pages where nothing is legible.
   // Named clip(), not focus(): `element.focus()` already means something else in a browser, and a
   // scenario author reading both in one file would have to guess which is which.
@@ -234,7 +205,7 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
     if (!(await loc.count().catch(() => 0))) { note(`clip: nothing matches ${sel}`); return; }
     // Scroll first, then read the box. boundingBox() is viewport-relative and does not scroll, so a
     // symptom below the fold yields a y beyond the viewport and the screenshot is rejected outright
-    // with "clipped area is either empty or outside the resulting image" — the lead evidence of the
+    // with "clipped area is either empty or outside the resulting image", and the lead evidence of the
     // report would vanish into a note for every long page.
     await loc.scrollIntoViewIfNeeded().catch(() => {});
     await settle();
@@ -248,39 +219,19 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
       width: Math.min(VIEW.width - left, box.width + pad * 2),
       height: Math.min(VIEW.height - top, box.height + pad * 2),
     };
-    const shot = `clip-${String(stepNo).padStart(2, '0')}-${slug(label || sel)}.png`;
+    const shot = `clip-${String(state.stepNo).padStart(2, '0')}-${slug(label || sel)}.png`;
     // The HUD is fixed to the bottom of the viewport: without taking it down first it paints over
-    // any region low on the screen, in the one screenshot the report leads with.
+    // any region low on the screen, in the one screenshot the report leads with. It is not raised
+    // again here because capture() does it at the end of this same step.
     await hudOff();
     await page.screenshot({ path: path.join(OUT, shot), clip: area })
-      .then(() => rec.clips.push({ step: stepNo, label: label || sel, selector: sel, shot }))
+      .then(() => rec.clips.push({ step: state.stepNo, label: label || sel, selector: sel, shot }))
       .catch((e) => note(`clip: ${e.message}`));
   };
-
-  const step = async (name, fn) => {
-    stepNo += 1;
-    const n = String(stepNo).padStart(2, '0');
-    const before = rec.consoleErrors.length + rec.netErrors.length;
-    const t0 = Date.now();
-    await hudOn(`${PHASE} · ${n} ${name}`);
-    try {
-      await fn();
-      await settle();
-    } catch (e) {
-      rec.harness.push(`step ${n} "${name}" threw: ${e.message}`);
-    }
-    await hudOn(`${PHASE} · ${n} ${name}`);
-    const shot = `${n}-${slug(name)}.png`;
-    await hudOff();
-    await page.screenshot({ path: path.join(OUT, shot), fullPage: false }).catch(() => {});
-    await hudOn(`${PHASE} · ${n} ${name}`);
-    rec.steps.push({ n, name, shot, ms: Date.now() - t0, newProblems: rec.consoleErrors.length + rec.netErrors.length - before });
-  };
-
   // Fixed regression net. Not configurable: it is the floor under "we only tested the happy path".
   const smoke = async () => {
-    inSmoke = true;
-    try { await smokeBody(); } finally { inSmoke = false; }
+    inRegressionNet = true;
+    try { await smokeBody(); } finally { inRegressionNet = false; }
   };
   const smokeBody = async () => {
     const visit = async (label, target) => {
@@ -299,16 +250,15 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
     await visit('cart', FO + '/index.php?controller=cart&action=show');
     if (BO) await visit('back office', BO);
   };
-
   // Responsive net. Deliberately basic: it answers "does the shop still work narrow?", not "is the
-  // design good?". Three binary facts per page and width — the page responds, it renders something,
-  // it does not scroll sideways — so the net never produces a finding a human has to dismiss.
+  // design good?". Three binary facts per page and width: the page responds, it renders something,
+  // it does not scroll sideways, so the net never produces a finding a human has to dismiss.
   // It runs in BOTH phases, which is what lets the report tell a regression this PR introduced from
   // a page that was already broken before it.
   // Screenshots are taken either way: they are the evidence for everything a machine cannot judge.
   const responsive = async () => {
-    inSmoke = true;                       // findings belong in the net, never in the preconditions
-    try { await responsiveBody(); } finally { inSmoke = false; await page.setViewportSize(VIEW); }
+    inRegressionNet = true;
+    try { await responsiveBody(); } finally { inRegressionNet = false; await page.setViewportSize(VIEW); }
   };
   const responsiveBody = async () => {
     const targets = [FO + '/', ...visited.filter((u) => u !== FO + '/')].slice(0, 3);
@@ -322,7 +272,7 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
           // Does anything actually show? A media query that hides the layout at one width leaves a
           // document that responds 200 and shows nothing. Check that `body` is really rendered
           // FIRST: innerText falls back to textContent on an element that is not being rendered,
-          // so `body { display: none }` would otherwise read as full of text. No height threshold —
+          // so `body { display: none }` would otherwise read as full of text. No height threshold:
           // a legitimately short page is not a bug. 20 characters is below any real shop page and
           // above the stray label an emptied layout leaves behind.
           const shown = !!document.body && document.body.getClientRects().length > 0
@@ -366,8 +316,6 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
       }
     }
   };
-
-  const startedAt = new Date().toISOString();
   await step('smoke: shop renders', smoke);
   // A scenario throwing between steps must not cost us the run: record it and carry on to the
   // teardown, so phase.json and the video always exist.
@@ -391,38 +339,12 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)
   }
   await browser.close();
 
-  const out = {
-    phase: PHASE,
-    scenarioName: scenario.name || null,
-    kind: scenario.kind || null,
-    where: scenario.where || 'fo',
-    bug: scenario.bug || null,
-    scenarioSha256: sha256(SCENARIO),
-    runner: __filename,
-    runnerSha256: RUNNER_SHA,
-    url: FO,
-    boUrl: BO || null,
-    playwright: require('playwright/package.json').version,
-    viewport: VIEW,
-    startedAt,
-    finishedAt: new Date().toISOString(),
-    video: 'video.webm',
-    ...rec,
-  };
-  fs.writeFileSync(path.join(OUT, 'phase.json'), JSON.stringify(out, null, 2));
-  const f = (a) => a.filter((x) => !x.passed).length;
-  console.log(`${PHASE}: ${rec.steps.length} steps, preconditions ${f(rec.preconditions)} failed, `
-    + `bug assertions ${f(rec.bugs)} failed, harness ${rec.harness.length}`);
-  rec.harness.forEach((h) => console.log(`  harness: ${h}`));
-  const preFailed = rec.preconditions.some((c) => !c.passed);
-  process.exit(rec.harness.length || preFailed ? 2 : 0);
+  await R.finish(scenario);
 })().catch((e) => {
-  // Even a runner that dies leaves a machine-readable record: the report reads phase.json.
+  // A runner that dies still owes a record. report.js reads phase.json, and a missing file is
+  // indistinguishable from a phase nobody ran, so die() writes what it has and exits 2. Before
+  // startPhase there is nothing to write with, hence the guard.
+  if (R) R.die(e);
   console.error('HARNESS ERROR', e);
-  try {
-    fs.writeFileSync(path.join(OUT, 'phase.json'), JSON.stringify(
-      { phase: PHASE, url: FO, outcome: 'harness', runner: __filename, runnerSha256: RUNNER_SHA,
-        ...rec, harness: [...rec.harness, `runner failed: ${e.message}`] }, null, 2));
-  } catch (_) { /* nothing left to do */ }
   process.exit(2);
 });

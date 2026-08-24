@@ -1,29 +1,44 @@
 #!/bin/sh
-# Find or build a working Playwright, without touching the shop or the repository under test.
+# Find or build a working Playwright, without touching the environment or the repository under test.
 #
 #   NODE_PATH=$(playwright-lab.sh) || exit 1
 #   export NODE_PATH
 #
 # Prints a directory to put on NODE_PATH on stdout; progress goes to stderr. Exit 2 if no working
 # Playwright could be obtained. Playwright lives in a throwaway lab under $TMPDIR: installing it
-# into the shop or the checkout would leave node_modules/ in a pull request.
+# into the environment or the checkout would leave node_modules/ in a pull request.
 set -u
 
 say() { echo "$@" >&2; }
-command -v node >/dev/null 2>&1 || { say "node is not on PATH — install Node.js first"; exit 2; }
-command -v npm  >/dev/null 2>&1 || { say "npm is not on PATH — install Node.js first"; exit 2; }
+command -v node >/dev/null 2>&1 || { say "node is not on PATH. Install Node.js first"; exit 2; }
+command -v npm  >/dev/null 2>&1 || { say "npm is not on PATH. Install Node.js first"; exit 2; }
 LAB="${TMPDIR:-/tmp}/ps-pr-qa-lab"
 
 # The probe records a one-frame video instead of only launching a browser. Launching proves Chromium
 # is there; it does not prove ffmpeg is, and ffmpeg is what records the video the report leans on. An
 # install that can launch but not record would fail at the very end of a two-phase run, after all
 # the work is paid for.
-PROBE='const {chromium}=require("playwright"),fs=require("fs"),os=require("os"),p=require("path");
-(async()=>{const d=fs.mkdtempSync(p.join(os.tmpdir(),"pw-probe-"));
-const b=await chromium.launch();const c=await b.newContext({recordVideo:{dir:d}});
-const pg=await c.newPage();await pg.goto("about:blank");await c.close();await b.close();
-const ok=fs.readdirSync(d).some(f=>f.endsWith(".webm")&&fs.statSync(p.join(d,f)).size>0);
-fs.rmSync(d,{recursive:true,force:true});process.exit(ok?0:1);})().catch(()=>process.exit(1));'
+# Single-quoted, so the JavaScript below must never use a single quote of its own.
+PROBE='
+const { chromium } = require("playwright");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+(async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pw-probe-"));
+  const browser = await chromium.launch();
+  const context = await browser.newContext({ recordVideo: { dir } });
+  const page = await context.newPage();
+  await page.goto("about:blank");
+  await context.close();   // Playwright only writes the video file when the context closes
+  await browser.close();
+  const recorded = fs.readdirSync(dir)
+    .some((f) => f.endsWith(".webm") && fs.statSync(path.join(dir, f)).size > 0);
+  fs.rmSync(dir, { recursive: true, force: true });
+  process.exit(recorded ? 0 : 1);
+})().catch(() => process.exit(1));
+'
 
 for CAND in "$LAB/node_modules" "$HOME"/.npm/_npx/*/node_modules; do
   [ -d "$CAND/playwright" ] || continue
@@ -33,7 +48,7 @@ for CAND in "$LAB/node_modules" "$HOME"/.npm/_npx/*/node_modules; do
   fi
 done
 
-say "installing Playwright into $LAB (nothing is written to the shop or the repository)"
+say "installing Playwright into $LAB (nothing is written to the environment or the repository)"
 mkdir -p "$LAB" || { say "cannot create $LAB"; exit 2; }
 ( cd "$LAB" && npm init -y >/dev/null && npm i playwright --no-audit --no-fund >&2 ) \
   || { say "playwright install failed"; exit 2; }

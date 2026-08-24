@@ -1,35 +1,53 @@
 #!/bin/sh
 # Pick the directory the QA evidence is written to, and refuse any directory that would leak it.
 #
-#   pick-run-dir.sh <front-office-url> <run-directory> [extra-served-directory ...]
+#   pick-run-dir.sh <front-office-url|-> <run-directory> [extra-served-directory ...]
+#
+# Pass `-` as the URL when the run never touches HTTP, which is the case for a command-line QA.
+# The port lookup is then skipped: without it, an empty URL would fall back to port 80 and guard
+# against whatever unrelated container happens to publish it.
 #
 # Prints the resolved run directory on stdout. Everything else goes to stderr, so callers can do:
-#   RUN=$(pick-run-dir.sh "$FO" "$HOME/prestashop-pr-qa/owner-repo-pr-42") || exit 1
+#   RUN=$(pick-run-dir.sh "$FO" "$HOME/prestashop-pr-qa/owner/repo/pr-42") || exit 1
 #
-# Why this exists: a video of a back-office session must never land in the shop or in the checkout.
+# Why this exists: a video of a back-office session must never land in the environment or in the checkout.
 # Inside the checkout it gets committed into the pull request by accident. Inside a directory the
-# web server serves — which includes a bind-mounted theme or module — it is downloadable by anyone.
+# web server serves, which includes a bind-mounted theme or module, it is downloadable by anyone.
 # Exit 2 means "refused, do not write anything"; exit 64 means the arguments are wrong.
 set -u
 
 say() { echo "$@" >&2; }
 die() { echo "refusing: $@" >&2; exit 2; }
 
-[ $# -ge 2 ] || { say "usage: $0 <front-office-url> <run-directory> [extra-served-directory ...]"; exit 64; }
+[ $# -ge 2 ] || { say "usage: $0 <front-office-url|-> <run-directory> [extra-served-directory ...]"; exit 64; }
 FO=$1; RUN=$2; shift 2
 
-case "$FO$RUN" in *'['*) die "a placeholder was left unsubstituted in '$FO' or '$RUN'" ;; esac
+# The commands in SKILL.md carry placeholders like [owner] or [front-office URL]. Pasting one
+# unsubstituted must stop here, not create a directory literally named "[repo]". A run directory
+# never legitimately contains a bracket. A URL can: an IPv6 host is written http://[::1]:8080/,
+# and only hex digits and colons sit between those brackets, so that is the one form allowed.
+case "$RUN" in *'['*) die "a placeholder was left unsubstituted in the run directory '$RUN'" ;; esac
+case "$FO" in
+  *'['*) printf '%s' "$FO" | grep -qE '^[a-zA-Z]+://\[[0-9A-Fa-f:]+\](:[0-9]+)?(/|$)' \
+    || die "a placeholder was left unsubstituted in the URL '$FO'" ;;
+esac
 
 # The URL names the port, the port is published by one container, and that container declares what
 # it mounts. Nothing to ask the developer for as long as the shop runs in Docker.
-HOSTPORT=$(printf '%s' "$FO" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##')
-case "$HOSTPORT" in
-  *:*) PORT=${HOSTPORT##*:} ;;
-  *)   case "$FO" in https://*) PORT=443 ;; *) PORT=80 ;; esac ;;
-esac
-
-CID=$(docker ps --format '{{.ID}} {{.Ports}}' 2>/dev/null | grep -E ":$PORT->" | awk '{print $1}' | head -1)
+CID=""
 CIDS=""
+if [ "$FO" = "-" ] || [ -z "$FO" ]; then
+  # No HTTP in this run. Nothing is served, so nothing can be published by accident: the checkout
+  # and anything the caller names are the whole list.
+  say "no shop URL given, so nothing is looked up in Docker"
+else
+  HOSTPORT=$(printf '%s' "$FO" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##')
+  case "$HOSTPORT" in
+    *:*) PORT=${HOSTPORT##*:} ;;
+    *)   case "$FO" in https://*) PORT=443 ;; *) PORT=80 ;; esac ;;
+  esac
+  CID=$(docker ps --format '{{.ID}} {{.Ports}}' 2>/dev/null | grep -E ":$PORT->" | awk '{print $1}' | head -1)
+fi
 if [ -n "$CID" ]; then
   # The whole compose project, not just that container: nginx publishes the port while php-fpm and
   # the theme mount the code, and all of it is the same shop.
@@ -40,10 +58,10 @@ if [ -n "$CID" ]; then
     CIDS=$CID
   fi
   say "port $PORT is served by $(docker inspect --format '{{.Name}}' "$CID" | sed 's#^/##')${PROJECT:+, compose project $PROJECT}"
-elif [ $# -eq 0 ]; then
+elif [ "$FO" != "-" ] && [ -n "$FO" ] && [ $# -eq 0 ]; then
   # Not in Docker: nothing on this machine knows what the web server serves. This is the only case
   # that needs a question. Ask which directory is served and pass it as a third argument.
-  die "nothing publishes port $PORT — ask which directory the web server serves, then pass it as an extra argument"
+  die "nothing publishes port $PORT. Ask which directory the web server serves, then pass it as an extra argument"
 fi
 
 # Every host directory the shop bind-mounts, the checkout this was invoked from, and anything the
@@ -55,7 +73,7 @@ GUARDS=$(
     --format '{{range .Mounts}}{{if eq .Type "bind"}}{{println .Source}}{{end}}{{end}}' $CIDS 2>/dev/null
 )
 GUARDS=$(printf '%s\n' "$GUARDS" | sed '/^$/d' | sort -u)
-[ -n "$GUARDS" ] || die "no directory to guard was found — an empty list is never a pass"
+[ -n "$GUARDS" ] || die "no directory to guard was found. An empty list is never a pass"
 
 # Resolve $RUN without creating it, so the decision happens before anything is written: walk up to
 # the deepest ancestor that does exist, resolve that, then put the missing tail back.
@@ -76,7 +94,7 @@ while IFS= read -r G; do
   # Docker mount source, say); the substitution would then be empty and the pattern would collapse
   # to /*, which matches every absolute path and refuses everything with a nonsensical message.
   GR=$(cd "$G" 2>/dev/null && pwd -P)
-  [ -n "$GR" ] || { say "note: cannot enter $G, so it could not be compared — keep the run directory well away from it"; continue; }
+  [ -n "$GR" ] || { say "note: cannot enter $G, so it could not be compared. Keep the run directory well away from it"; continue; }
   case "$RUN_REAL/" in "$GR"/*)
     rm -f "$LIST"; die "$RUN_REAL is inside $G" ;;
   esac
@@ -84,10 +102,10 @@ done < "$LIST"
 
 mkdir -p "$RUN_REAL/env" || die "cannot create $RUN_REAL"
 mv "$LIST" "$RUN_REAL/env/guarded-paths.txt"
-[ -f "$RUN_REAL/report.md" ] && say "note: reusing this run directory — a previous pass left report.md in it"
+[ -f "$RUN_REAL/report.md" ] && say "note: reusing this run directory, a previous pass left report.md in it"
 
-# Inside any other git work tree — a dotfiles repository, say — is untidy, not dangerous: warn.
+# Inside any other git work tree, a dotfiles repository say, is untidy rather than dangerous: warn.
 TOP=$(git -C "$RUN_REAL" rev-parse --show-toplevel 2>/dev/null) &&
-  say "note: inside the git work tree $TOP — keep it out of commits"
+  say "note: inside the git work tree $TOP, keep it out of commits"
 
 echo "$RUN_REAL"
