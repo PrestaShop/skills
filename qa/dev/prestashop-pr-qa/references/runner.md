@@ -14,6 +14,7 @@
 * Exit codes
 * `scenario.js`, written fresh for each PR
 * The tokens the diff adds
+* The pages a PR touches, and how to find them
 * Checks that pass for the wrong reason
 ## Three probes, one set of rules
 
@@ -153,6 +154,7 @@ The scenario may declare `smoke: ['<an endpoint that must keep answering>']`, sa
 | `steps` | one row per `step()`: number, name, screenshot, duration, and how many console or network problems appeared during it |
 | `smoke` | the fixed regression net: front page, a product page, the cart, the back office |
 | `clips` | one row per marked region: its label, its selector and the clipped screenshot |
+| `surfaces` | one row per declared surface: the side, the status, whether it rendered, a screenshot, and `unreachable` when the URL could not legitimately be opened |
 | `responsive` | one row per page per narrow viewport: `responds`, `rendered`, `overflowPx`, the boxes that stick out, and a screenshot |
 | `consoleErrors`, `netErrors` | everything the page reported, whether the scenario looked or not |
 | `notes` | what the run wants the report to say out loud, flakes included |
@@ -203,6 +205,7 @@ The SAME file runs in both phases, unchanged. Its hash goes into each `phase.jso
 | `where` | `fo`, `bo` or `both` in a browser; `cli`; `http` |
 | `viewport` | browser only. `desktop` by default, `mobile` when the ticket is about mobile |
 | `smoke` | command line and HTTP only. What must keep working. Declare none and the runner says so in a note rather than pretending to have checked |
+| `surfaces` | browser only. The pages this PR touches, on both sides of the shop, each prefixed `bo:` or `fo:`. Derived from the diff and confirmed by the user, never guessed. A `bo:` entry needs the scenario to have called `loginBO()`, or it is recorded as unmeasured and says so. See the section below |
 | `pr`, `issue` | read by nothing. They keep the file self-describing once it is attached to the report |
 
 ### A browser scenario
@@ -217,6 +220,9 @@ module.exports = {
   kind: 'bugfix',          // 'bugfix' | 'feature'
   where: 'fo',             // 'fo' | 'bo' | 'both'
   bug: 'the user-visible symptom, in the reporter\'s words',
+  // The pages this PR touches, both sides of the shop. Derived from the diff, confirmed by the
+  // user, and measured in both phases: one that answered before and fails after is a rejection.
+  surfaces: ['bo:/<the migrated route>', 'fo:index.php?controller=<php_self>'],
 
   // `url` is the front office, `boUrl` the back office. Navigate with the one that matches
   // `where`, or a back-office scenario logs in and then measures the shop.
@@ -340,6 +346,55 @@ awk '/assert\.bug\(/,/\);/' scenario.js \
 Any name printed has to be rewritten in user-visible terms before the run. Hits inside `assert.detail` do not matter. That is what `detail` is for, which is why the check is scoped to `assert.bug` blocks.
 
 The grep is an aid, not the rule. A single lowercase word the PR introduces, say a new class called `hidden`, slips through it, and the rule still stands: a bug assertion says what the person who filed the ticket would see.
+## The pages a PR touches, and how to find them
+
+`smoke` covers what the ticket never mentions. `surfaces` covers what it does. The list is not the diff: a diff names files, and what you need is the pages, endpoints or commands those files are reachable through. Two questions, in order.
+
+**What does the diff serve directly?** Every changed file sits behind something a person can open. Work back from the file to that thing.
+
+| The diff touches | The surface is | Where its address lives |
+| --- | --- | --- |
+| a front-office controller | its own page | `$php_self` in the controller. The few that do not declare one are not pages: file downloads, uploads, currency switches |
+| a Symfony route or its controller | the route | `path` in the routing file under `src/PrestaShopBundle/Resources/config/routing/`. Check the path this version actually uses rather than assuming it |
+| a legacy back-office controller | its page, if it has not been migrated | token-signed, see below |
+| a module's front controller | the module page | assembled by `Link::getModuleLink`, from the module name and the controller file name, unless the module declares its own route. Read it, the query-string form differs with friendly URLs on or off |
+| a template, a partial, a macro | every page that includes it | grep the include or extends by file name |
+| a theme's `scss` or `js` entry | every page the theme serves, so the front page is the honest choice | the entry name in the build config |
+| a console command | not a page, use the command-line probe | the command's own name |
+
+**What else is built on the same code?** This is the half the ticket never mentions and where a migration breaks something nobody looked at. A model, an entity, a repository, a service or a grid definition is usually shared, and the other side of the shop is built on it too.
+
+**Match on names, never on usage.** The obvious recipe is to take the shared class out of the diff and grep for it, and it produces mostly noise: on a real checkout a bare word-grep for one model across `controllers/` returned eight files, six of which merely call it in passing. Reach for the naming convention instead, which in this codebase is consistent enough to be mechanical.
+
+```bash
+# the stem: strip the Admin prefix, the Controller suffix and the plural from what the diff touches
+gh pr diff "$PR" --repo "$REPO" --name-only
+
+# then its siblings, wherever they live: front office, legacy back office, migrated back office,
+# modules, themes. One find, both sides, no assumption about which sides exist
+find controllers src modules themes -iname "*[stem]*Controller.php" 2>/dev/null
+```
+
+A stem with siblings on two sides means the PR has a counterpart to check. A stem with one file means it does not, and saying so in the report is worth as much as finding one.
+
+**Read each address from the code, never construct it.** A page's URL is written down somewhere in every case above. Guessing it produces a 404 that reads exactly like a broken page, and a false red is worse than a gap.
+
+**The surfaces pass never voids a verdict.** By the time it runs the scenario has already produced its measurements, and throwing them away because an extra page could not be opened would be worse than not checking it. So a surface it cannot reach is recorded as unmeasured, with the reason, and the verdict stands on what was measured.
+
+**Prefer a migrated back-office route over the legacy one.** A Symfony route is a plain path and opens directly. A legacy `index.php?controller=Admin…` is token-signed per controller, so opened directly it answers 200 with an "Invalid token" page: the runner detects that and records **"could not be measured"** rather than failing a pull request over a URL it was never able to build.
+
+### If the PR is a legacy to Symfony migration
+
+Two routing defaults carry the parts of the page a screenshot cannot show, and both are worth reading in the diff itself:
+
+```yaml
+defaults:
+  _legacy_controller: Admin[Something]   # the key the employee permission check is applied through
+  _legacy_link: Admin[Something]         # the old URL that must still land on the new route
+```
+
+`_legacy_link` is declared **per action**, not once per page: index, filter, create, edit, delete each carry their own. A migration that maps only the index leaves the list working and every button broken, and no screenshot of a working list will show it. `_legacy_controller` missing does not break the page either, it detaches it from the permission it used to be behind, which is a security regression a green run will happily report as fine.
+
 ## Checks that pass for the wrong reason
 
 These are the ways a browser check reports success while proving nothing. Every one has been paid for at least once.

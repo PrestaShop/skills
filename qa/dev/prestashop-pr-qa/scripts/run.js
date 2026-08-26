@@ -143,6 +143,23 @@ let R = null;   // hoisted so the crash handler below can still write phase.json
     if (hit) put(rec.preconditions, `${where(page.url())} is not an error page`, false, hit[0]);
   });
 
+  // Does anything actually show? Check that `body` is really rendered FIRST: innerText falls back
+  // to textContent on an element that is not being rendered, so `body { display: none }` would
+  // otherwise read as full of text. 20 characters is below any real page and above the stray label
+  // an emptied layout leaves behind. One helper, called by the surfaces pass and the narrow
+  // pass, because two definitions that disagree would report the same page differently in one run.
+  const isRendered = () => page.evaluate(() => {
+    const shown = !!document.body && document.body.getClientRects().length > 0
+      && getComputedStyle(document.body).display !== 'none';
+    return shown && (document.body.innerText || '').trim().length > 20;
+  }).catch(() => false);
+
+  // One file name per URL. The slug alone collides: it is truncated, so two long URLs differing
+  // only at the end produce the same name and the report shows one page as evidence for two. Four
+  // hex characters of the full string keep them apart and stay readable.
+  const shotName = (prefix, s2) =>
+    `${prefix}-${slug(s2) || 'page'}-${crypto.createHash('sha256').update(s2).digest('hex').slice(0, 4)}.png`;
+
   // A selector matching nothing makes every check pass. Count before you assert.
   const count = async (sel, o = {}) => {
     const min = o.min === undefined ? 1 : o.min;
@@ -241,6 +258,15 @@ let R = null;   // hoisted so the crash handler below can still write phase.json
       const clean = !FATAL.test(await page.content());
       rec.smoke.push({ label, url: target, status, ok: status > 0 && status < 400 && clean });
     };
+    // A back-office pull request cannot break the cart or a product page, so visiting them is not a
+    // floor, it is noise in the report. The floor is then the two facts a floor exists for: the
+    // container still builds and serves the back office, and the shop still answers at all. What the
+    // PR does touch is covered by `surfaces` below, which is a different question and is asked there.
+    if (scenario.where === 'bo') {
+      if (BO) await visit('back office', BO);
+      await visit('front page', FO + '/');
+      return;
+    }
     await visit('front page', FO + '/');
     const first = page.locator('a[href*="id_product"], .product-title a, .products a').first();
     if (await first.count() > 0) {
@@ -249,6 +275,55 @@ let R = null;   // hoisted so the crash handler below can still write phase.json
     }
     await visit('cart', FO + '/index.php?controller=cart&action=show');
     if (BO) await visit('back office', BO);
+  };
+
+  // The pages this PR actually touches, on BOTH sides of the shop. Not the same question as the
+  // smoke floor: that one covers what the ticket never mentions, this one covers what it does.
+  // A back-office change reaches the front office through the model they share, and that is where a
+  // migration breaks something nobody looked at. Measured in both phases like everything else, so a
+  // surface that worked before and fails after is attributable to this PR.
+  const surfaces = async () => {
+    const list = Array.isArray(scenario.surfaces) ? scenario.surfaces : [];
+    if (!list.length) { note('no surfaces declared: the scenario named no page this PR touches'); return; }
+    inRegressionNet = true;
+    try { await surfacesBody(list); } finally { inRegressionNet = false; }
+  };
+  const surfacesBody = async (list) => {
+    // The back office needs a session, and this pass must never void a verdict: the scenario has
+    // already produced its measurements by now, and throwing them away because an EXTRA page could
+    // not authenticate would be worse than not checking it. So no login happens here. If the
+    // scenario declared a back-office surface it has to call loginBO() itself, and if it did not,
+    // the surface is recorded as unmeasured with that reason written out.
+    const loggedIn = BO ? (await page.locator('input[name="passwd"]').count()) === 0 : false;
+    for (const entry of list) {
+      const m = /^(bo|fo):(.*)$/.exec(entry);
+      const side = m ? m[1] : 'fo';
+      const ref = m ? m[2] : entry;
+      if (side === 'bo' && (!BO || !loggedIn)) {
+        rec.surfaces.push({ side, ref, url: null, status: 0, ok: null, shot: null,
+          unreachable: !BO ? 'a back-office surface was declared but --bo-url was not given'
+            : 'the scenario did not log in to the back office, so this page could not be opened. Call loginBO() in a step' });
+        continue;
+      }
+      const base = side === 'bo' ? BO : FO;
+      const target = /^https?:/.test(ref) ? ref : base + (ref.startsWith('/') ? '' : '/') + ref;
+      const r = await page.goto(target, { waitUntil: 'domcontentloaded' }).catch(() => null);
+      await settle();
+      const status = r ? r.status() : 0;
+      const body = await page.content().catch(() => '');
+      // A LEGACY back-office URL is token-signed per controller: opened directly it answers 200 with
+      // an "Invalid token" page. That is the measurement failing, not the page being broken, and
+      // calling it red would fail a pull request over a URL this runner cannot legitimately build.
+      const tokenWall = /Invalid security token|Invalid token/i.test(body);
+      const rendered = await isRendered();
+      const shot = shotName('surface', `${side}-${ref}`);
+      await page.screenshot({ path: path.join(OUT, shot), fullPage: false }).catch(() => {});
+      rec.surfaces.push({
+        side, ref, url: target, status, shot, rendered,
+        unreachable: tokenWall ? 'the legacy back-office URL is token-signed, so it cannot be opened directly' : null,
+        ok: tokenWall ? null : (status > 0 && status < 400 && !FATAL.test(body) && rendered),
+      });
+    }
   };
   // Responsive net. Deliberately basic: it answers "does the shop still work narrow?", not "is the
   // design good?". Three binary facts per page and width: the page responds, it renders something,
@@ -268,22 +343,16 @@ let R = null;   // hoisted so the crash handler below can still write phase.json
         const r = await page.goto(target, { waitUntil: 'domcontentloaded' }).catch(() => null);
         await settle();
         const fatal = FATAL.test(await page.content().catch(() => ''));
+        // A media query that hides the layout at one width leaves a document that responds 200 and
+        // shows nothing. No height threshold: a legitimately short page is not a bug.
+        const rendered = await isRendered();
         const m = await page.evaluate(() => {
-          // Does anything actually show? A media query that hides the layout at one width leaves a
-          // document that responds 200 and shows nothing. Check that `body` is really rendered
-          // FIRST: innerText falls back to textContent on an element that is not being rendered,
-          // so `body { display: none }` would otherwise read as full of text. No height threshold:
-          // a legitimately short page is not a bug. 20 characters is below any real shop page and
-          // above the stray label an emptied layout leaves behind.
-          const shown = !!document.body && document.body.getClientRects().length > 0
-            && getComputedStyle(document.body).display !== 'none';
-          const rendered = shown && (document.body.innerText || '').trim().length > 20;
           // clientWidth, not innerWidth: innerWidth includes a classic scrollbar where the browser
           // renders one, which would hide an overflow smaller than the scrollbar. Same measure as
           // the layout, so the comparison is exact.
           const vw = document.documentElement.clientWidth;
           const over = Math.round(document.documentElement.scrollWidth - vw);
-          if (over <= 1) return { over: 0, worst: [], rendered };
+          if (over <= 1) return { over: 0, worst: [] };
           // Advisory only: name a few visible boxes that stick out, to save the developer the hunt.
           // `position: fixed` is skipped because a fixed element cannot create document overflow,
           // so an off-canvas menu parked to the right is not what made the page scroll.
@@ -297,19 +366,15 @@ let R = null;   // hoisted so the crash handler below can still write phase.json
               ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : '';
             return el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + cls;
           });
-          return { over, worst, rendered };
-        }).catch(() => ({ over: 0, worst: [], rendered: false }));
-        // The pathname alone collides: with friendly URLs off every page is /index.php, so two
-        // targets would write the same file and the report would show one page as evidence for two.
-        // Four hex characters of the full URL are enough to keep them apart and still readable.
-        const tag = target === FO + '/' ? 'home'
-          : `${slug(where(target)) || 'page'}-${crypto.createHash('sha256').update(target).digest('hex').slice(0, 4)}`;
-        const shot = `${name}-${tag}.png`;
+          return { over, worst };
+        }).catch(() => ({ over: 0, worst: [] }));
+        // With friendly URLs off every page is /index.php, so the pathname alone is not a name.
+        const shot = target === FO + '/' ? `${name}-home.png` : shotName(name, where(target));
         await page.screenshot({ path: path.join(OUT, shot), fullPage: false }).catch(() => {});
         const status = r ? r.status() : 0;
         rec.responsive.push({
           viewport: name, size: `${VIEWS[name].width}x${VIEWS[name].height}`, url: target,
-          status, responds: status > 0 && status < 400 && !fatal, rendered: m.rendered,
+          status, responds: status > 0 && status < 400 && !fatal, rendered,
           overflowPx: m.over, worst: m.worst, shot,
           ok: status > 0 && status < 400 && !fatal && m.rendered && m.over === 0,
         });
@@ -325,6 +390,7 @@ let R = null;   // hoisted so the crash handler below can still write phase.json
     rec.harness.push(`scenario threw outside a step: ${e.message}`);
   }
 
+  await step('surfaces: the pages this PR touches', surfaces);
   await step('responsive: 375 and 768 wide', responsive);
 
   // Playwright's video encoder trails the page by a few frames; without this the recording can end

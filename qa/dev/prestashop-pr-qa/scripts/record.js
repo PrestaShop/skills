@@ -56,7 +56,7 @@ function startPhase({ phase, out, scenarioPath, probe }) {
 
   const rec = {
     preconditions: [], bugs: [], details: [], steps: [],
-    smoke: [], responsive: [], clips: [], commands: [], requests: [],
+    smoke: [], surfaces: [], responsive: [], clips: [], commands: [], requests: [],
     consoleErrors: [], netErrors: [], harness: [], notes: [],
   };
   const state = { stepNo: 0 };

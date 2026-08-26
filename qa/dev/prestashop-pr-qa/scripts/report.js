@@ -199,6 +199,31 @@ const smokeRows = () => {
     [e(label), attribute(b, a), e(b ? b.status : 'not measured'), e(a ? a.status : 'not measured')]);
 };
 
+// The surfaces this PR touches, on both sides of the shop. A surface that answered before and
+// fails after is a regression this PR introduced, whatever the bug assertions say. One case is not:
+// a legacy back-office URL is token-signed, so it cannot be opened directly, and the runner says
+// "could not be measured" rather than failing a PR over a URL it was never able to build.
+const surfaceRows = () => {
+  const k = (r) => `${r.side}:${r.ref}`;
+  const map = new Map();
+  (before ? before.surfaces || [] : []).forEach((r) => map.set(k(r), { b: r }));
+  (after ? after.surfaces || [] : []).forEach((r) => map.set(k(r), { ...(map.get(k(r)) || {}), a: r }));
+  const why = (r) => {
+    if (!r) return 'not measured';
+    if (r.unreachable) return r.unreachable;
+    if (r.ok) return `${r.status}, renders`;
+    return [r.status ? `answered ${r.status}` : 'no response',
+            r.status > 0 && r.status < 400 && !r.rendered ? 'rendered nothing' : ''].filter(Boolean).join(', ');
+  };
+  return [...map.entries()].map(([label, { b, a }]) => {
+    const blocked = (b && b.unreachable) || (a && a.unreachable);
+    const side = label.startsWith('bo:') ? 'back office' : 'front office';
+    return [`${e(side)} <code translate="no">${e(label.slice(3))}</code>`,
+            blocked ? badge('flat', 'could not be measured') : attribute(b, a),
+            e(why(b)), e(why(a))];
+  });
+};
+
 // ── the honesty checks: the reasons a verdict could be void, each answered ──
 const same = (k) => before && after ? before[k] === after[k] : null;
 const checks = [
@@ -466,6 +491,12 @@ ${band('canvas', 'The evidence', evidenceSub(), evidence())}
 ${isBrowser ? band('dark', 'The runs, recorded', 'Both phases end to end, at the speed they happened.',
   `<div class="two">${video('before', before)}${video('after', after)}</div>`) : ''}
 
+${(((after || {}).surfaces || []).length || ((before || {}).surfaces || []).length)
+  ? band('canvas', 'The pages this PR touches',
+      'Both sides of the shop, measured in both phases. A page that answered before and fails after is a regression this PR introduced, whatever the bug assertions say.',
+      rows(['Surface', 'Verdict', 'before', 'after'], surfaceRows()))
+  : ''}
+
 ${band('canvas', 'Regression net', 'Checks the ticket never asked for, run in both phases so a finding can be blamed on the PR or cleared of it.', `
 <h3>${isBrowser ? 'Pages still work' : PROBE === 'cli' ? 'The declared commands still run' : 'The neighbouring endpoints still answer'}</h3>
 ${rows([isBrowser ? 'Page' : PROBE === 'cli' ? 'Command' : 'Endpoint', 'Verdict', 'before', 'after'], smokeRows())}
@@ -474,6 +505,10 @@ ${rows(['Viewport and page', 'Verdict', 'before', 'after', 'Boxes sticking out']
 ${isBrowser ? `<p class="sub">Only three things are asserted narrow: the page responds, it renders
 visible content, it does not scroll sideways. A cramped price, a two-line button or a stretched
 image is not measured. That is what the screenshots below are for.</p>
+${(after || before || {}).where === 'bo'
+  ? `<p class="sub">The back office is <strong>not</strong> covered narrow. Re-visiting one of its
+  pages loses the per-controller token and lands on the login form, so the widths below are the shop,
+  not the pages this PR changes.</p>` : ''}
 <p class="sub">Click any screenshot to open it full size.</p>
 ${narrowShots()}` : ''}`)}
 

@@ -50,11 +50,12 @@ In this order:
 2. the environment: URLs, the PrestaShop and PHP versions, the version of the theme, module or library under test, the two states tested, the commands run in each phase and who ran them, the probe and what it needed (browser and Playwright versions, or the working directory, or the base URL), the runner path with its `runnerSha256`, and the state the environment was left in
 3. the classification, and **where the test steps came from**
 4. reproduction, then verification
-5. the regression net: the smoke pass and, for a browser run, the two narrow viewports, each stated as introduced, pre-existing or fixed, ending with a sentence naming exactly what was covered, for example `Regression coverage: smoke pages, plus 375/768 responds-renders-no-overflow only.`
-6. the honesty checks: the three hashes identical across phases, preconditions, canary readings, bug assertions referencing PR-introduced markup, flake re-samples
-7. what was not tested
-8. the verdict and one sentence of reasoning
-9. a pointer to `comments/`, and the artifact tree
+5. the pages this PR touches: every `surfaces` entry, both sides of the shop, and what became of each one. A page that worked before and fails now is a rejection by itself, which is why this section comes before the regression net rather than inside it
+6. the regression net: the smoke pass, and in a browser run the two narrow widths. For each, say whether this PR broke it, whether it was already broken, or whether this PR fixed it. Close with one sentence naming what was really covered, such as `Regression coverage: smoke pages, plus 375 and 768 checked only for a response, visible content and sideways scrolling.` On a back-office PR, add that the narrow pass never reaches the back office: its pages carry a token that a second visit loses
+7. the honesty checks: the three hashes identical in both phases, the preconditions, the two canary readings, whether any bug assertion named markup the PR adds, and any check that had to be read twice
+8. what was not tested
+9. the verdict and one sentence of reasoning
+10. a pointer to `comments/`, and the artifact tree
 
 Reference screenshots paired by step index, so a reviewer sees both states of the same moment:
 

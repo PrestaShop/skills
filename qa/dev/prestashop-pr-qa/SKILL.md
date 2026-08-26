@@ -144,6 +144,8 @@ Write it from the **ticket's** steps first. Read the diff only afterwards, and o
 
 If the ticket is about mobile, declare `viewport: 'mobile'` in the scenario, so the bug is measured at the width where it was reported. Browser runs only. See [references/runner.md](references/runner.md).
 
+Then derive `surfaces`, the pages this PR touches on both sides of the shop, and propose the list before writing it into the scenario. On a back-office PR this is what catches the breakage the ticket never thought to mention. See [references/runner.md](references/runner.md).
+
 Then check every bug assertion against the tokens the diff adds. The recipe is in [references/runner.md](references/runner.md). A bug assertion naming a class, id or attribute the PR introduces proves nothing: on the code from before the fix that selector is simply absent, the check fails, and the run claims a reproduction it never made. Rewrite it in the words of the ticket.
 
 ### 4. GATE: show the scenario, ask for the code from before the fix
@@ -221,11 +223,21 @@ The shape of `verdict.json`, what belongs in each report and the rules for the t
 
 A check that fails in **both** phases is pre-existing: report it, do not hold it against the PR.
 
+A surface the PR touches that answered in `before` and fails in `after` is 🔴 **not approved** on its own, even when every bug assertion passed. The fix working on the page the ticket names does not license breaking the page next to it.
+
+### The pages the PR touches
+
+The smoke pass covers what the ticket never mentions. This covers what it does, and they are not the same question. A back-office change reaches the front office through the model the two share, and that is where a migration breaks something nobody looked at: the migrated page is perfect and the front-office page built on the same model renders nothing.
+
+The scenario declares them as `surfaces`, one entry per page, prefixed by the side it lives on: `surfaces: ['bo:/<the route under test>', 'fo:<the page built on the same code>']`.
+
+**Derive the list from the diff, then ask.** Say which pages you propose and why, in one sentence, and let the user correct you: they know whether the ticket has a front-office side. Each surface is opened in both phases and asked whether it answers, is not a fatal page, and rendered anything. The recipe, and the one case that is a failed measurement rather than a failed page, are in [references/runner.md](references/runner.md).
+
 ### The regression net
 
 Every phase also runs checks the ticket never asked for. The smoke pass runs under every probe. **In a browser run** it is joined by the front page plus up to two of the pages the scenario opened, re-visited at **375 and 768 wide**; a command-line or HTTP run has no viewport, so the net there is the smoke pass alone, and the report says so rather than leaving the reader to assume widths were checked.
 
-The smoke pass visits the front page, a product page, the cart, and the back office when its URL was given. It asks one thing of each: did it answer under 400, and is the body not a fatal error page. It is not a test of those pages, it is the floor under "we only tested the happy path", and it is **not configurable in a browser run** on purpose: a list the agent could choose would drift towards pages related to the ticket, which is exactly what it must not cover. The narrow pass asks only whether the shop still works at that width: the page responds, it renders visible content, it does not scroll sideways. It never judges the design.
+The smoke pass follows `where`. A front-office or mixed PR gets the front page, a product page, the cart, and the back office when its URL was given. A back-office PR loses the cart and the product page, which it cannot break: what is left is the back office, proving the container still builds, and the front page, proving the shop still answers. What that PR does touch is covered by `surfaces` above. It asks one thing of each: did it answer under 400, and is the body not a fatal error page. It is not a test of those pages, it is the floor under "we only tested the happy path", and it is **not configurable in a browser run** on purpose: a list the agent could choose would drift towards pages related to the ticket, which is exactly what it must not cover. The narrow pass asks only whether the shop still works at that width: the page responds, it renders visible content, it does not scroll sideways. It never judges the design.
 
 Everything is measured in both phases, which is the whole point: the comparison is what makes a finding attributable.
 
