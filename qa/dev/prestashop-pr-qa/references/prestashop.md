@@ -9,7 +9,7 @@ The order below is the order a QA run needs them in.
 * Making a change visible: caches, opcache, the canary
 * What a code downgrade cannot undo: when a checkout does not reset the database
 * Modules: `vendor/`, the three versions a module carries, a disabled module
-* Themes: the version bump in `config/theme.yml`
+* Themes: the two versions a theme carries, and where the installed one lives
 * Back office: the admin folder, the CSRF token, per-controller tokens
 * Assessing files the merchant changed
 
@@ -102,7 +102,7 @@ Snapshots are what the [autoupgrade](https://github.com/PrestaShop/autoupgrade) 
 ## Modules
 
 * If a `composer.json` file exists, **`composer install --no-dev` is mandatory**, not optional. A module's `vendor/` is not in git, and its classes autoload through it. Without it the module fatals on the first autoload.
-* **A module carries three versions, and they disagree on purpose.** `[module].php` declares `$this->version`, `config.xml` caches the last one the shop saw, and the `ps_module` table records what is actually installed. There is no console command that lists them: `prestashop:module` only takes install, uninstall, enable, disable, reset, upgrade, configure and delete.
+* **A module carries three versions, and they disagree on purpose.** `[module].php` declares `$this->version`, `config.xml` caches the last one the shop saw, and the `ps_module` table records what is actually installed. `prestashop:module:list` gives one version and a status per module, and a dash for a module that is on disk but not installed, so it answers "is it installed and enabled" but not "do the three agree". Read the two files when the divergence is the point:
 
 ```bash
 grep -m1 'this->version' [shop]/modules/[name]/[name].php     # what the checked-out code claims
@@ -114,7 +114,14 @@ grep -m1 '<version>'     [shop]/modules/[name]/config.xml     # what the shop la
 
 ## Themes
 
-The theme's version is in `config/theme.yml`. A PR that bumps it makes the back office offer to update the theme, and the shop keeps a record of the installed theme in the database, so a theme version bump is another change a git checkout alone does not undo.
+**A theme carries two versions, like a module.** `config/theme.yml` in the theme is what the checked-out code claims. `config/themes/[theme]/shop[N].json` at the shop root is what the shop actually installed: a snapshot of that same file taken at install time, one per shop, so multistore has `shop1.json`, `shop2.json` and so on. The database only records which theme a shop uses, in `ps_shop.theme_name`, never its version.
+
+```bash
+grep -m1 '^version' [shop]/themes/[name]/config/theme.yml               # what the checked-out code claims
+grep -o '"version":"[^"]*"' [shop]/config/themes/[name]/shop1.json      # what the shop installed
+```
+
+So a PR that bumps the theme version leaves the two disagreeing after a checkout, exactly as a module does, and the back office offers to update the theme. A git checkout alone does not undo that.
 
 ## Back office
 
