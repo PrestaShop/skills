@@ -7,7 +7,7 @@ The order below is the order a QA run needs them in.
 * Reading the pull request: the linked issue, the merge base, the PR-dependency probe
 * Where the code sits: core, module, theme, and what actually needs building
 * Making a change visible: caches, opcache, the canary
-* What a code downgrade cannot undo: one-way migrations
+* What a code downgrade cannot undo: when a checkout does not reset the database
 * Modules: `vendor/`, the three versions a module carries, a disabled module
 * Themes: the version bump in `config/theme.yml`
 * Back office: the admin folder, the CSRF token, per-controller tokens
@@ -16,7 +16,8 @@ The order below is the order a QA run needs them in.
 ## Reading the pull request
 
 * Reproduction steps, the affected version and the reporter's own screenshots usually live in the **linked issue**, not the PR. `gh pr view N --json closingIssuesReferences` finds it. Where the steps sit in the PR body itself is covered by the workflow in `SKILL.md`.
-* The code from before *this* PR is its merge base, not the tip of the base branch. The tip carries everything merged since the PR branched. Reading the pull request is yours to do; **preparing the ground is the developer's**. The first command only asks GitHub a question, so run it. The next two write into their repository, one by creating a ref and one by needing that ref: print them, ask, wait.
+* The code from before *this* PR is its **merge base**, not the tip of the base branch, which carries everything merged since the PR branched.
+* Reading the pull request is yours to do; **preparing the ground is the developer's.** The first command below only asks GitHub a question, so run it. The next two are theirs: one writes a ref into their repository, the other needs that ref. Print them, ask, wait.
 
 ```bash
 gh pr view "$PR" --repo "$REPO" --json baseRefName,headRefOid   # a read, run it
@@ -47,7 +48,12 @@ Nothing found is a missing dependency, not a defect. If another PR has to be app
 
 `.tpl`, `.twig` and `.php` need no build. Anything under `src/` or `_dev/`, and every `.scss` or `.ts`, does. **Find the build rather than assuming it:** locate the `package.json` whose directory contains the changed files and read its `scripts`: the theme root for hummingbird, `_dev/` for classic, and one per workspace in the core.
 
-A core pull request usually needs no build at all. `src/` is PHP, `classes/` is PHP, and neither is compiled by anything. Only three directories in the core repository carry front-end sources: `admin-dev/themes/default/` and `admin-dev/themes/new-theme/` for the back office, and `themes/_core/js` for the handful of scripts the themes share. If the diff touches none of them, there is nothing to build and offering to build is noise.
+**A core pull request usually needs no build at all**, because `src/` and `classes/` are PHP and nothing compiles them. Only three directories in the core carry front-end sources:
+
+* `admin-dev/themes/default/` and `admin-dev/themes/new-theme/`, for the back office
+* `themes/_core/js`, for the handful of scripts the themes share
+
+If the diff touches none of them, offering to build is noise.
 
 ### A theme's built assets do not follow a git checkout
 
@@ -67,18 +73,31 @@ A PR touching only `templates/` needs no build: Smarty recompiles on mtime chang
 * **opcache** is the silent one. With `opcache.validate_timestamps=0`, common in production-shaped containers, the new file lands on disk and never reaches the browser. If the canary refuses to move after a correct checkout and a cache clear, this is why: the PHP process has to be reloaded.
 * **The canary itself:** `curl -s -L '[url]' | grep -c '[string]'`. curl has no cache, no service worker and no browser profile, so it reports what the server actually serves. Take a reading in each phase. If the two readings are identical, the shop never changed state and no result from it means anything.
 
-**The back office cannot be canaried with `curl`.** An admin page needs an authenticated session, so `curl` receives the login form rather than the page under test, and the count is identically useless in both phases. Take the reading in the browser instead, after `loginBO()`: a Playwright context is created fresh for each phase, with an empty cache, no service worker and no profile, so a marker read out of the DOM is nearly as trustworthy as `curl`. Record it with `assert.detail` and quote both readings in the report. If no marker can be read at all, say the canary was unobtainable. Never imply that it flipped.
+**The back office cannot be canaried with `curl`.** An admin page needs a session, so `curl` gets the login form instead, and the count is equally useless in both phases.
+
+Read it in the browser instead, after `loginBO()`. Playwright builds a fresh context per phase, with an empty cache, no service worker and no profile, so a marker read from the DOM is nearly as trustworthy as `curl`. Record it with `assert.detail` and quote both readings. If no marker can be read at all, say the canary was unobtainable, and never imply that it flipped.
 
 ## What a code downgrade cannot undo
 
-Going back to the older code does **not** go back to an older database. If the diff touches any of these, a `before` phase is not sound and must be skipped with the reason stated:
+Going back to older code does **not** go back to an older database. Rows and columns created going forward survive the checkout, so `git checkout` alone does not always reset the environment for a `before` phase.
 
-* `install/upgrade/sql/`, core schema steps
-* `upgrade/upgrade-*.php` in a module, one-way upgrade scripts
-* `ALTER TABLE`, `ADD COLUMN`, or doctrine mapping changes
-* new `ps_configuration` keys, or hooks registered in `install()`
+Spot it when the diff is first read, not at the gate: once the pull request's code has run here, nothing puts the database back.
 
-Rows and columns created going forward stay after the checkout goes back.
+```bash
+# files that are one-way by what they are
+gh pr diff "$PR" --repo "$REPO" \
+  | grep -E '^\+\+\+ b/.*(upgrade/upgrade-.*\.php|upgrade/.*\.sql|[Mm]igrations?/)'
+
+# added lines that write to the database or to stored configuration
+gh pr diff "$PR" --repo "$REPO" | grep '^+' \
+  | grep -iE 'ALTER TABLE|CREATE TABLE|DROP (TABLE|COLUMN)|ADD COLUMN|Configuration::updateValue|registerHook|ORM\\Column'
+```
+
+Match shapes, not paths: PrestaShop 9 ships no `install/upgrade/`, while a module still carries `upgrade/upgrade-1.2.0.php`. Prefer a false positive, which costs one question, to a false negative, which costs the run.
+
+Nothing printed, nothing to do. Something printed, and one question settles it: **has this pull request already run in this environment?** If not, a checkout is enough. If it has, a checkout is still enough when the state it left cannot reach what the scenario measures, a column nothing reads yet for instance. Otherwise the phase needs a snapshot taken before the migration ran, and without one there is no `before` phase to have: say so and cap the verdict. When you cannot tell, assume it can reach it.
+
+Snapshots are what the [autoupgrade](https://github.com/PrestaShop/autoupgrade) module does, and the sibling skills `autoupgrade/user/prestashop-restore` and `autoupgrade/user/prestashop-update` already drive it. **Take the commands from there, never from here.** One thing to say before offering it: a restore is not a database rewind, it puts back the files too and deletes anything absent from the archive, so it overwrites the working tree. The developer decides.
 
 ## Modules
 

@@ -52,7 +52,7 @@ The person running this QA may be a developer, an integrator, a QA engineer or a
 
 1. **The developer prepares the ground.** Anything that writes to their repository is theirs: a checkout, a fetch, a ref. A checkout can destroy uncommitted work, and it is their branch. Print the command, say what it is for, wait. Reading is yours: `gh pr view`, `gh pr diff`, `git merge-base` on refs that already exist.
 2. **Everything derived from the code, the skill offers to run itself**: `composer install`, the build, `cache:clear`. The order matters: rebuild first, read the canary second.
-3. `before` **runs first, always.** Migrations, module upgrade scripts and new configuration keys only run forward. Testing the PR first leaves the `before` run reading a migrated database.
+3. `before` **runs first, always.** Migrations only run forward, so testing the PR first leaves the `before` run reading a migrated database.
 4. **The same** `scenario.js` **runs in both phases, unchanged**, and so does the runner. Three hashes are recorded in each phase, the scenario, the runner and the shared recording rules; any mismatch voids the verdict.
 5. **Nothing is ever posted to GitHub.** The comment is written to a file for the user to paste.
 6. **Back-office credentials arrive as the** `QA_BO_EMAIL` **and** `QA_BO_PASSWORD` **environment variables**, never as command-line arguments: arguments end up in artifacts that get pasted into a public pull request.
@@ -103,6 +103,7 @@ Then:
 - **Propose the probe, then confirm it.** The diff suggests one: templates, assets or a controller's output mean `browser`; a console command, an install or upgrade script, a composer script mean `cli`; a webservice resource or a JSON endpoint means `http`. Say which one you propose and why, in one sentence, and let them correct you. They know whether the ticket is about the page or the command; the diff only knows which files moved. A PR can need two, and then it gets two runs and one report per probe.
 - **Stop here** if no probe can observe the change: CI config, documentation, tests only, a pure refactor. Say which it is, and that there is no verdict to give. Inventing steps for such a PR manufactures a verdict out of nothing.
 - Check whether the PR silently depends on another PR before blaming the code. The probe is in [references/prestashop.md](references/prestashop.md).
+- **If the diff is one-way, ask now whether this PR has already run here.** A checkout does not reset the database, and at the gate the question is too late. See [references/prestashop.md](references/prestashop.md).
 
 ### 2. Set up the run directory, and Playwright for a browser run
 
@@ -134,7 +135,7 @@ Tell the user the run directory now, and again at the end, so the files are find
 | `comments/` | one file per GitHub target, holding **only** what to paste there |
 | `env/` | PR metadata, the tokens the diff adds, the canary readings, the guarded paths |
 
-The run directory is **reused** across passes on the same PR; a phase directory is not. The runner empties `before/` or `after/` itself before measuring it, so an earlier pass's video can never be read as this run's proof. Nothing to remember, and nothing to forget. Move a pass aside first (`mv before before-01`) if it is worth keeping. Whatever you do find in a phase directory is only evidence if its `phase.json` hashes match the `scenario.js` and the runner about to run; otherwise treat that phase as absent and say so.
+The run directory is **reused** across passes on the same PR; a phase directory is not. The runner empties `before/` or `after/` itself before measuring it, so an earlier pass's video can never be read as this run's proof. Move a pass aside first (`mv before before-01`) if it is worth keeping. Whatever you do find in a phase directory is only evidence if its `phase.json` hashes match the `scenario.js` and the runner about to run; otherwise treat that phase as absent and say so.
 
 ### 3. Write scenario.js from the ticket's steps
 
@@ -162,7 +163,7 @@ Show the scenario. Then print the exact commands that put the environment back o
 
 Offer to run everything except `git`, so the rebuild happens before the canary reading. `git` stays with the developer, because a checkout can destroy uncommitted work. Then **wait**.
 
-Skip the `before` phase, saying why, when the diff touches something a code downgrade cannot undo. Going back to older code does not go back to an older database, so the measurement would be dishonest. What counts as one-way is listed in [references/prestashop.md](references/prestashop.md). For a new feature there is nothing to reproduce: go to step 6.
+Skip the `before` phase, saying why, when a checkout cannot reset the database and no snapshot exists. Step 1 is where that was decided. For a new feature there is nothing to reproduce: go to step 6.
 
 Name any fixture data or configuration change out loud before creating it, and list it in the report.
 
@@ -235,9 +236,9 @@ The scenario declares them as `surfaces`, one entry per page, prefixed by the si
 
 ### The regression net
 
-Every phase also runs checks the ticket never asked for. The smoke pass runs under every probe. **In a browser run** it is joined by the front page plus up to two of the pages the scenario opened, re-visited at **375 and 768 wide**; a command-line or HTTP run has no viewport, so the net there is the smoke pass alone, and the report says so rather than leaving the reader to assume widths were checked.
+Every phase also runs checks the ticket never asked for. The smoke pass runs under every probe. **In a browser run** it is joined by the front page plus up to two of the pages the scenario opened, re-visited at **375 and 768 wide**. A command-line or HTTP run has no viewport, so the net there is the smoke pass alone, and the report says so.
 
-The smoke pass follows `where`. A front-office or mixed PR gets the front page, a product page, the cart, and the back office when its URL was given. A back-office PR loses the cart and the product page, which it cannot break: what is left is the back office, proving the container still builds, and the front page, proving the shop still answers. What that PR does touch is covered by `surfaces` above. It asks one thing of each: did it answer under 400, and is the body not a fatal error page. It is not a test of those pages, it is the floor under "we only tested the happy path", and it is **not configurable in a browser run** on purpose: a list the agent could choose would drift towards pages related to the ticket, which is exactly what it must not cover. The narrow pass asks only whether the shop still works at that width: the page responds, it renders visible content, it does not scroll sideways. It never judges the design.
+The smoke pass follows `where`. A front-office or mixed PR gets the front page, a product page, the cart, and the back office when its URL was given. A back-office PR loses the cart and the product page, which it cannot break: what is left is the back office, proving the container still builds, and the front page, proving the shop still answers. What that PR does touch is covered by `surfaces` above. Each page is asked one thing: did it answer under 400, and is the body not a fatal error page. **In a browser run that list is not configurable**, on purpose: one the agent could choose would drift towards the ticket, which is exactly what it must not cover. A command-line or HTTP scenario declares its own with `smoke`. The narrow pass asks only whether the shop still works at that width: the page responds, it renders visible content, it does not scroll sideways. It never judges the design.
 
 Everything is measured in both phases, which is the whole point: the comparison is what makes a finding attributable.
 
