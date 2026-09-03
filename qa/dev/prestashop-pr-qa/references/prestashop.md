@@ -60,10 +60,6 @@ For a theme PR touching `src/` or `_dev/` that means:
 
 A PR touching only `templates/` needs no build: Smarty recompiles on mtime change.
 
-### A theme's composer.json is not a module's
-
-hummingbird ships a `composer.json`, but with an empty `require`, no `autoload` section, and only dev tooling in `require-dev` (`header-stamp`, `autoindex`). None of it is needed to serve the theme, so **a theme needs no `composer install`**, unlike a module, whose `vendor/` is absent from git and whose classes autoload through it.
-
 ## Making a change visible
 
 * **Twig, PHP and YAML** need `php bin/console cache:clear`. Clear both environments, because the front office and back office may not run in the same one.
