@@ -86,7 +86,7 @@ Rows and columns created going forward stay after the checkout goes back.
 
 ## Modules
 
-* **`composer install --no-dev` is mandatory**, not optional. A module's `vendor/` is not in git, and its classes autoload through it. Without it the module fatals on the first autoload.
+* If a `composer.json` file exists, **`composer install --no-dev` is mandatory**, not optional. A module's `vendor/` is not in git, and its classes autoload through it. Without it the module fatals on the first autoload.
 * **A module carries three versions, and they disagree on purpose.** `[module].php` declares `$this->version`, `config.xml` caches the last one the shop saw, and the `ps_module` table records what is actually installed. There is no console command that lists them: `prestashop:module` only takes install, uninstall, enable, disable, reset, upgrade, configure and delete.
 
 ```bash
