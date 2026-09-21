@@ -129,6 +129,10 @@ function rollUp(item) {
   if (!seen.length) state = 'not-covered';
   else if (outcomes.has('fail')) state = 'fail';
   else if (outcomes.has('inconclusive')) state = 'partial';
+  // A point nobody attempted is not a point that held. Without this branch a
+  // point skipped on every cell falls through to 'pass' and is counted as
+  // settled, which is the one claim this report promises never to make.
+  else if (outcomes.has('skipped')) state = 'partial';
   else if (outcomes.has('needs-human')) state = 'needs-human';
   else if (missing.length) state = 'partial';
   else state = 'pass';
@@ -229,13 +233,17 @@ function verify() {
 // nobody ran it on: rollUp names the worst thing that happened, not how much of
 // the matrix it happened on. Counting only the 'partial' state here would let a
 // campaign that ran one cell of four build as complete.
-const stillOwed = (l) => l.state === 'not-covered' || l.missing.length > 0;
+// 'partial' is what an answer of inconclusive or skipped rolls up to, and such a
+// point has been visited without being settled. Owing only the unvisited and the
+// half-visited would let a campaign that skipped a point on every cell build as
+// complete, which is the same hole as counting a skip as a pass.
+const stillOwed = (l) => l.state === 'not-covered' || l.missing.length > 0 || l.state === 'partial';
 const gaps = {
   builtAt: new Date().toISOString(),
   cells: allCells,
   notCovered: ledger.filter((l) => l.state === 'not-covered')
     .map((l) => ({ item: l.item.id, section: l.item.section, text: l.item.text })),
-  partlyCovered: ledger.filter((l) => l.state !== 'not-covered' && l.missing.length)
+  partlyCovered: ledger.filter((l) => l.state !== 'not-covered' && (l.missing.length || l.state === 'partial'))
     .map((l) => ({ item: l.item.id, section: l.item.section, text: l.item.text,
                    state: l.state, ranOn: l.cells,
                    missingCells: l.missing, outcomes: [...new Set(l.seen.map((o) => o.outcome))] })),
@@ -250,8 +258,10 @@ if (has('require-complete')) {
   const owed = ledger.filter(stillOwed)
     .map((l) => ({ item: l.item.id, text: l.item.text, missingCells: l.missing }));
   if (owed.length) {
-    console.error(`refusing to build: ${owed.length} point(s) in scope are not answered on every cell yet,`);
-    console.error('and this campaign was asked for a complete one. The first few:\n');
+    console.error(`refusing to build: ${owed.length} point(s) in scope are not settled on every cell yet,`);
+    console.error('and this campaign was asked for a complete one. A point counts as owed when it was');
+    console.error('never run, when a cell of the matrix never saw it, or when what came back was');
+    console.error('inconclusive or skipped, which is a visit rather than an answer. The first few:\n');
     for (const g of owed.slice(0, 15)) {
       console.error(`  ${g.item}  ${g.text.slice(0, 60)}${g.missingCells.length ? `  (never run on ${g.missingCells.join(', ')})` : ''}`);
     }

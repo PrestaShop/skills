@@ -60,13 +60,18 @@ They know the theme and the shop. They do not know this skill and should not hav
    checkout, the build, `composer install`, `cache:clear`, this skill offers to run.
 4. **Evidence never lands in the theme folder or anywhere the shop serves.** `pick-run-dir.sh`
    enforces it and refuses a folder that would.
-5. **Credentials arrive in the environment**, never as arguments: `QA_BO_EMAIL` and
+5. **Look for the back office credentials before asking for them.** A shop run from a
+   compose file usually declares them, and the defaults are right there:
+   `grep -E 'ADMIN_MAIL|ADMIN_PASSWD' docker-compose*.y*ml .env`. Read what the compose
+   file sets, check `.env` does not override it, and try them. Asking for something the
+   repository already states costs the person a round trip and can strand a whole sitting.
+6. **Credentials arrive in the environment**, never as arguments: `QA_BO_EMAIL` and
    `QA_BO_PASSWORD` for the back office, `QA_SQL` for the command that reads the database.
    Arguments are readable by everyone on the machine and end up in files that get shared.
-6. **Nothing is posted anywhere.** Issue text is written to files for the user to paste.
-7. **A shop-wide setting is written down before it is changed**, and a restore nobody could
+7. **Nothing is posted anywhere.** Issue text is written to files for the user to paste.
+8. **A shop-wide setting is written down before it is changed**, and a restore nobody could
    confirm counts as a failure.
-8. **Data made up for a test is written down before it is made**, and ends either removed and
+9. **Data made up for a test is written down before it is made**, and ends either removed and
    read back, or left on purpose with the reason. A record that is neither stops the report from
    building, because the alternative is a shop quietly carrying invented data that the next
    campaign reads as real.
@@ -175,6 +180,15 @@ node "$SKILL_DIR/scripts/run-suite.js" \
 Run **profile by profile, not section by section**: B2B mode is a shop-wide switch, so every B2C
 cell runs, the switch is flipped once, then every B2B cell. A campaign that flips it per section
 strands the shop on the first crash.
+
+**`--profile` is a label, not a switch.** Nothing in the tooling makes the shop B2B
+because a run says `--profile=b2b`. Throw the switch, then **prove it on the front
+office before running anything**: a category page answering 200, the header rendering
+its modules, and a price that changed. A customer group created without category and
+module access is the trap here, because PrestaShop grants both per group: every
+category answers 403 and the header comes out empty, which is indistinguishable from
+the theme collapsing. One pass of that produced seventeen failures that were all the
+group's permissions and none of them the theme's.
 
 **Some points cannot be answered on the data the shop has**, and the campaign may make up what
 they need: a linked accessory, without which the accessories block does not render at all, an
@@ -301,6 +315,8 @@ stale checklist line is not "nearly three": it is a number nobody can use.
 | `point(s) in scope are not answered on every cell yet` | `--require-complete` and `gaps.json` is not empty | answer what it names, or drop the flag and declare the narrowed `scope` |
 | `THE SHOP HAS MOVED` | a setting changed since the baseline | put it back, or start a clean shop, and say in the report that a reset happened |
 | a module check says "renders nothing" | it is installed and its assets load but it shows nothing | read its configuration: an empty one is a state the checklist asks about, a dead hook is a defect |
+| a module check says its markup "is not really visible" | the module rendered, but something is covering it | open the drawer or the accordion first, which is the narrow-screen check the checklist is asking for |
+| a whole profile fails at once, every category 403 | the customer group that profile uses has no category or module access | PrestaShop grants both per group: copy them from the default customer group before blaming the theme |
 | every mobile control reads "hidden by a parent" | they live in a drawer that starts closed | open the drawer first, which is the mobile check the checklist actually asks for |
 
 ## Bundled files

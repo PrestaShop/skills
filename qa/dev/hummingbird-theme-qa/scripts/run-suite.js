@@ -245,9 +245,23 @@ const videoTmp = path.join(outRoot, `.video-${label}-${profile}-${viewportName}`
         evidence: [await snap(`${moduleName}-${slug(where)}`)],
       });
     }
+    // A node that exists but cannot be seen is a different situation from a node
+    // that was never rendered, and saying "no markup" for both sends the reader
+    // hunting a dead hook when the truth is a closed drawer or a collapsed
+    // accordion. On a narrow screen that is where half the header lives.
+    if (nodes > 0) {
+      return S.observe(item, 'needs-human', {
+        measurement: { nodesFound: nodes, visible, assetsLoaded: assets },
+        detail: `${moduleName} rendered ${nodes} node(s) matching ${selector} ${where}, but none of them is really visible`
+          + `${visible.hiddenAncestor ? ': an ancestor is hiding it, which on a narrow screen usually means a drawer or an accordion that is still closed' : ''}`,
+        reason: 'the module did render, so this is not a dead hook. Open whatever is covering it, which is itself the check the checklist asks for on a narrow screen, or say why it should be visible as it stands',
+        evidence: [await snap(`${moduleName}-${slug(where)}`)],
+      });
+    }
+
     return S.observe(item, 'fail', {
       assertion: `${moduleName} is on this page`,
-      detail: `no markup ${where}, and neither its stylesheet nor its script is loaded, so it is not hooked here at all`,
+      detail: `nothing matches ${selector} ${where}, and neither its stylesheet nor its script is loaded, so it is not hooked here at all`,
       evidence: [await snap(`${moduleName}-${slug(where)}`)],
     });
   }
@@ -450,6 +464,11 @@ const videoTmp = path.join(outRoot, `.video-${label}-${profile}-${viewportName}`
     open, see, count, noPageErrors, moduleRenders, settle, snap,
     overflow, contrast, focusRing, imageScale, accessibility, loginBO,
     fixtureCreated: S.fixtureCreated, fixtureRemoved: S.fixtureRemoved, fixtureLeft: S.fixtureLeft,
+    // A suite that changes a shop-wide setting has to write it down before the
+    // change and read it back after, and record.js has always been able to do
+    // that. Without these two on the api a suite could only journal by hand,
+    // and what it journalled never reached the report's own settings section.
+    settingOpened: S.settingOpened, settingRestored: S.settingRestored,
   };
 
   // A suite that throws is the run that most needs its recording kept, so the

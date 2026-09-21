@@ -66,6 +66,8 @@ Four things every check does, and a check that does not do them is not a check:
 | `loginBO(item)` | signs into the back office with the credentials in the environment |
 | `settle()` | waits for the network, the fonts and the animations. Never a fixed wait |
 | `snap(name)` | takes an extra screenshot and gives back its name, for evidence |
+| `settingOpened({setting, was, set, where})` | writes down a shop-wide setting **before** it is changed, so a run that dies in the middle still says what to put back |
+| `settingRestored(entry, readBack)` | ends it, having read the value back from the shop. A restore nobody could confirm is a failure, not a success |
 | `fixtureCreated({what, how, id, why})` | writes down a record the suite is about to make up. `why` names the checklist point that needs it |
 | `fixtureRemoved(entry, stillThere)` | ends it, having read back whether it really went |
 | `fixtureLeft(entry, reason)` | ends it the other way, for a record that cannot be taken away |
@@ -77,11 +79,20 @@ A screenshot that could not be taken is never silent: `step()` and `snap()` both
 fault, because a green whose picture went missing is exactly the claim this report promises never
 to make.
 
+A setting a suite changes belongs in `settingOpened` and `settingRestored` rather than in a file
+the suite writes itself: only those two reach the report's own settings section, which is where a
+reader looks to see whether the shop was left as it was found.
+
 `moduleRenders` exists because a module that shows nothing is two situations wearing one face:
 it has nothing configured, which the checklist explicitly asks to test, or its hook is not
 firing, which is a defect. It reports which of the module's own files loaded and whether any
 markup came out, and hands the choice to a person. Recording that as a failure is a false red,
 and false reds are what stop a report being read.
+
+It tells a third situation apart as well: markup that exists but is not really visible. On a
+narrow screen that is nearly always a drawer or an accordion still closed, so it is reported as
+something to look at rather than as missing markup. Saying "no markup" about a node that is
+sitting right there sends the reader hunting a dead hook that does not exist.
 
 ## What a machine may settle, and what it may not
 

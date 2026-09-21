@@ -64,6 +64,23 @@ cd "$LAB" || die "cannot enter $LAB"
 npm i playwright axe-core --no-audit --no-fund >&2 || die "could not install playwright and axe-core"
 npx playwright install chromium ffmpeg >&2 || die "could not install Chromium and ffmpeg"
 
+# Two checklist points read as impossible without these, and both are a download
+# away: the Safari row needs WebKit, which is the engine Safari ships, and the
+# Lighthouse row needs Lighthouse. Neither is required to drive a pass, so a
+# failure here is said out loud and the lab still works without them.
+if [ "${QA_SKIP_EXTRAS:-0}" != "1" ]; then
+  if npx playwright install webkit >&2; then
+    say "WebKit installed: the Safari half of the matrix can be driven (iOS still needs the device)"
+  else
+    say "could not install WebKit, so the Safari row stays a question for a person"
+  fi
+  if npm i lighthouse --no-audit --no-fund >&2; then
+    say "Lighthouse installed: its scores can be recorded, which is what the checklist asks (record, never fail on them)"
+  else
+    say "could not install Lighthouse, so its row stays a question for a person"
+  fi
+fi
+
 if works "$LAB/node_modules"; then
   say "browser tooling ready"
   printf '%s\n' "$LAB/node_modules"
