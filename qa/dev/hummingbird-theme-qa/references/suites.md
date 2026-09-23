@@ -106,8 +106,19 @@ the total equals the lines plus shipping. An empty required field blocks the for
 does not move on. The burger shows below the breakpoint and the menu above it. Tab reaches a
 named control and does not get stuck. An automatic accessibility rule is broken.
 
-**Measure it, then let a person decide.** These look automatable and are not. A measured check
-is recorded as `needs-human` with the number and a screenshot, **never as a pass**:
+**Measure it, then let a person decide — but only when the measurement found something.** These
+look automatable and are not. A measured check is recorded as `needs-human` with the number and a
+screenshot, **never as a pass**, *whenever there is something in the reading to judge*.
+
+When the reading is empty, say so instead. Zero is not ambiguous: nothing sticking out at all is
+not a fixed panel parked off-screen, and no image asked for more pixels than it has is not a
+picture that might still look right. `overflow()` and `imageScale()` therefore pass on a clean
+reading and hand over only when they found something. Two do not get that licence, because their
+"clean" is not clean: **contrast** answers "cannot tell" for every string over a photograph, so
+zero violations is silence rather than a pass, and **the focus ring** can be shown to change but
+never to be visible enough. Those two stay with a person however the number comes out.
+
+The bucket itself:
 
 | Point | Why |
 | --- | --- |
@@ -126,8 +137,19 @@ A module switched off by default, until someone switches it on.
 
 ## Making up the data a point needs
 
-Some points cannot be answered on the data the shop has. A suite may create what it needs, and
-the rules are in [environment.md](environment.md). In short: look first, because a demo install
+Some points cannot be answered on the data the shop has. **That is a reason to make what they
+need, not a reason to hand them to a person.** `needs-human` is for a judgement only a person can
+make, not for an absence a command can fill: "the demo catalogue has no linked accessory" tells a
+reader nothing about the theme, and a report full of those sentences is a report about the shop.
+
+Use the checklist's own seeder first. `seed.php --status` names what is missing, `--apply` makes
+it through PrestaShop's model classes, `--undo` puts back everything that can be put back. One
+call to it answers the accessory block, the best-sellers and cross-selling history, the vouchers
+page, the out-of-stock labels, the minimum-quantity refusal, the 410 page, the multishipment
+split, and the B2B group that shows prices excluding tax.
+
+A suite may still create what the seeder does not cover, and the rules are in
+[environment.md](environment.md). In short: look first, because a demo install
 already carries most of it; make it through the back office or the front office rather than by
 writing to the database, or the theme will look broken when it is not; name it so it is
 recognisable; and end every one of them, either removed and read back, or left on purpose with
@@ -162,6 +184,13 @@ renamed tab or a moved field invalidates a row silently.
 
 Each of these has cost a real run somewhere.
 
+* **A guessed selector is the single largest source of false reds.** Read the theme's real class
+  names before writing one — `bem-inventory.mjs` in the checklist's own folder prints them out of
+  the templates and the stylesheets. Guessing produced, in one pass: `.cart-item` for a cart line
+  that is `.cart__item`, `a[href]` for a pager built from `<button data-ps-data>`, `.product-title`
+  for `a.product-miniature__title`, `h2` for a modal heading that is `<p class="h2 modal-title">`,
+  and `.product-variants` for a container that is `fieldset.product-variant`. Every one of them
+  reported a working theme as broken.
 * **A selector matching nothing makes every "is absent" check pass.** Anything you depend on goes
   through `count()`, which records a zero match as inconclusive instead of green.
 * **A module switched off renders nothing**, so every check for something inside it passes over

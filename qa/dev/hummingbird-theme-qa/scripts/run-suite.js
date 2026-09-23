@@ -300,13 +300,23 @@ const videoTmp = path.join(outRoot, `.video-${label}-${profile}-${viewportName}`
       return { over, worst: worst.slice(0, 3), viewport: d.clientWidth };
     });
     const shot = await snap(`overflow-${slug(where)}`);
+    // Nothing past the edge is not ambiguous. The reason this measurement is
+    // handed to a person is that a fixed panel parked off-screen reads the same
+    // as a real overflow -- and that only arises once something IS past the
+    // edge. A reading of zero has nothing in it to mistake, so it is settled.
+    if (m.over === 0) {
+      return S.observe(item, 'pass', {
+        assertion: `nothing overflows the viewport sideways at ${m.viewport} wide`,
+        measurement: m,
+        evidence: [shot],
+        detail: `the document is exactly as wide as the ${m.viewport}px viewport, so no element is past the edge and there is nothing to tell a real overflow from a parked panel`,
+      });
+    }
     return S.observe(item, 'needs-human', {
       assertion: null,
       measurement: m,
       evidence: [shot],
-      detail: m.over === 0
-        ? `nothing sticks out at ${m.viewport} wide`
-        : `${m.over}px past the edge at ${m.viewport} wide, worst: ${m.worst.map((w) => `${w.tag}.${w.cls}`).join(', ')}`,
+      detail: `${m.over}px past the edge at ${m.viewport} wide, worst: ${m.worst.map((w) => `${w.tag}.${w.cls}`).join(', ')}`,
       reason: 'a fixed menu or a slider gives the same number as a real overflow, so a person decides',
     });
   }
@@ -373,11 +383,20 @@ const videoTmp = path.join(outRoot, `.video-${label}-${profile}-${viewportName}`
     });
     const shot = await snap(`images-${slug(where)}`);
     const stretched = m.worst.filter((w) => w.ratio > 1.15);
+    // Same reasoning as overflow(): the judgement this asks for is whether a
+    // picture stretched a little still looks right, and that question only
+    // exists once one has been stretched. Nothing over the threshold settles it.
+    if (!stretched.length) {
+      return S.observe(item, 'pass', {
+        assertion: `every loaded image has at least as many pixels as the size it is drawn at, measured against a device pixel ratio of ${m.dpr}`,
+        measurement: m,
+        evidence: [shot],
+        detail: `all ${m.counted} images are within the 1.15x threshold, so none is being upscaled and there is no stretch to judge`,
+      });
+    }
     return S.observe(item, 'needs-human', {
       measurement: m, evidence: [shot],
-      detail: stretched.length
-        ? `${stretched.length} of ${m.counted} images are asked for more pixels than they have, worst ${stretched[0].ratio}x`
-        : `all ${m.counted} images have enough pixels for the size they are drawn at`,
+      detail: `${stretched.length} of ${m.counted} images are asked for more pixels than they have, worst ${stretched[0].ratio}x`,
       reason: 'a picture asked to grow slightly can still look right, and the browser may have picked a source for another screen',
     });
   }

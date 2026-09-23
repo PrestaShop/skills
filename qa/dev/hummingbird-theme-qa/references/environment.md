@@ -89,7 +89,38 @@ at all, so a guessed list of "settings that move by themselves" would only have 
 drift. If a reading reports something that moved with nobody touching it, add it to the
 campaign's own ignore file with the reason, and it appears in the report as a stated exception.
 
+## The toolkit that ships with the checklist
+
+Before building anything, read the whole of `docs/qa/` at the ref the checklist came from. The
+checklist is documentation for a toolkit, and a campaign that reads only the markdown rebuilds —
+badly — what is already sitting next to it. On the Hummingbird checklist that is:
+
+```bash
+# the shop root is the working directory, and the scripts live outside the checkout
+docker exec -u www-data -w /var/www/html <php container> php /tmp/hb-qa/seed.php --status
+docker exec -u www-data -w /var/www/html <php container> php /tmp/hb-qa/config.php --get PS_CATALOG_MODE
+node docs/qa/bem-inventory.mjs --block product
+```
+
+* **`seed.php`** brings a demo install up to the state the checklist assumes: `--status` says what
+  is missing, `--apply` makes it, `--undo` puts back everything that can be put back. It is
+  idempotent and goes through PrestaShop's model classes, so search indexes, image types and
+  friendly URLs stay consistent — which raw inserts do not.
+* **`config.php`** reads and writes one setting through the Configuration API the back office
+  itself calls, and prints the value read back rather than the value asked for. Section 4 is
+  twenty-four settings to flip and restore; driving twenty-four back office forms for that is
+  slower and far more brittle, and a campaign that cannot put a setting back is worse than one
+  that never changed it.
+* **`bem-inventory.mjs`** prints the theme's real class names out of its templates and
+  stylesheets. Read it before writing a selector.
+
+Run `seed.php --status` before agreeing the run with anyone. What it reports missing is the
+difference between a campaign that answers the checklist and one that spends its report
+explaining that the shop could not answer it.
+
 ## Making up data to test with
+
+**Use the seeder first.** Everything below applies to what it does not cover.
 
 A good part of the checklist cannot be answered on an empty shop. The You might also like block
 does not render without a linked accessory. Cross-selling and best sellers need order history.
@@ -144,6 +175,19 @@ be made, and prefer changing an existing product to adding one.
 The report lists everything that was made up, why it was needed, and whether it is still there.
 
 ## Putting a setting back
+
+**Prefer the setting to the form.** Where a point names a configuration key, write it with
+`config.php --set NAME=value`, which prints what the value reads afterwards, and keep the browser
+for the front-office half of the point. Back office forms are worth driving only when the point is
+about the form. Driven forms fail in ways that are quiet and specific to each page: a Save with no
+`type` attribute so `button[type="submit"]` matches nothing, a real submit named `[submit]` while a
+button matched by the word "Save" belongs to another dialog, a Bootstrap switch whose click does
+not register, a country select that re-renders the form and discards what was typed, a switch that
+clears a companion field so the restore is refused. Each of those turns into a setting reported as
+having no effect when it was never saved — or worse, a setting left changed.
+
+Whatever writes it, **read the value back from a freshly loaded page**, never from the DOM that was
+just edited: a form that failed to save still shows what was typed into it.
 
 A change is written down **before** it is made, so a run that dies in the middle still leaves a
 record of what to undo. Afterwards the value is read again, and a restore nobody could confirm

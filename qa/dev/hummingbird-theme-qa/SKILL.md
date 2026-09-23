@@ -52,8 +52,12 @@ They know the theme and the shop. They do not know this skill and should not hav
 
 ## Rules that do not bend
 
-1. **The checklist is the scope.** Add no test, drop no section, invent nothing. The only
-   judgement is how to measure a point and whether a machine can settle it at all.
+1. **The checklist is the scope, and so is whatever ships beside it.** Add no test, drop no
+   section, invent nothing — tooling included. Read the whole of `docs/qa/` before writing a line:
+   a checklist that has grown a seeder, a settings helper or a selector inventory has already
+   solved the problems the campaign is about to hit, and rebuilding them badly is worse than not
+   having them. The only judgement is how to measure a point and whether a machine can settle it
+   at all.
 2. **Take the checklist from the release tag** matching the theme version, whenever one carries
    it. Fall back to the branch only when none does, and say so on the report.
 3. **The developer owns `git`.** Print the command and wait. Everything downstream of a
@@ -135,6 +139,25 @@ node "$SKILL_DIR/scripts/checklist.js" --theme="[the Hummingbird folder]" --out=
 It says where it took the checklist from, prints its decision about every table, and counts the
 points. Show that count to the user: it is the size of what they just agreed to.
 
+**Then look at what else is in that folder**, at the same ref:
+
+```bash
+git -C "[the Hummingbird folder]" show "[the ref]":docs/qa/ 2>/dev/null || ls "[the Hummingbird folder]/docs/qa/"
+```
+
+The checklist is documentation for a toolkit, not a lone file, and reading only the markdown is
+how a campaign ends up with eighty points it could have answered. Read the header comment of
+everything there; the ones this checklist has grown so far, and what each one is for:
+
+| What | What it does | What it saves |
+| --- | --- | --- |
+| `seed.php` | `--status`, `--apply`, `--undo`. Brings a demo install up to the state the checklist assumes, through PrestaShop's own model classes | the accessory, the paid order, the second currency, the B2B group with prices excluding tax, the out-of-stock and minimum-quantity and 410 products, the carrier restriction that makes a cart split, the customisation fields, the category thumbnails |
+| `config.php` | `--get`, `--set`, `--unset` one setting through the Configuration API the back office itself calls | every point in section 4, without driving twenty-four back office forms that each fail differently |
+| `bem-inventory.mjs` | prints the theme's real class names out of its templates and stylesheets | the guessed selector, which is the single largest source of false reds in a browser pass |
+
+Run `seed.php --status` before agreeing the run. What it says is missing is the difference between
+a campaign that answers the checklist and one that reports that the shop could not answer it.
+
 Read the versions rather than asking: `version` and `compatibility` in `config/theme.yml`, the
 PrestaShop version from the shop, module versions from `composer show`. **Stop** if the theme
 under test falls outside the PrestaShop range it declares: every result would be about a
@@ -190,13 +213,15 @@ category answers 403 and the header comes out empty, which is indistinguishable 
 the theme collapsing. One pass of that produced seventeen failures that were all the
 group's permissions and none of them the theme's.
 
-**Some points cannot be answered on the data the shop has**, and the campaign may make up what
-they need: a linked accessory, without which the accessories block does not render at all, an
-order so cross-selling and best sellers have history, a cart rule for the vouchers page. Look
-first: a demo install already carries most of it, and creating a twenty-first product to test a
-listing buys nothing and changes the shop for every section after it. Make it through the back
-office or the front office, never by writing to the database, or the theme will look broken when
-it is not. The rules and the calls are in [references/environment.md](references/environment.md).
+**Some points cannot be answered on the data the shop has.** That is a reason to make what they
+need, not a reason to hand them to a person. "The demo catalogue has no linked accessory" is a
+sentence about the shop, and a person reading it learns nothing about the theme.
+
+Use the checklist's own seeder first — `seed.php --apply` — because it is idempotent, it goes
+through PrestaShop's model classes so search indexes and image types stay consistent, and `--undo`
+puts back everything it can. Only make something by hand when the seeder does not cover it, and
+then through the back office or the front office, never by writing to the database. The rules and
+the calls are in [references/environment.md](references/environment.md).
 
 A result that came from a command or from a person goes through the same door, and carries the
 file that shows it. Put that file in the cell folder first:
@@ -317,6 +342,10 @@ stale checklist line is not "nearly three": it is a number nobody can use.
 | a module check says "renders nothing" | it is installed and its assets load but it shows nothing | read its configuration: an empty one is a state the checklist asks about, a dead hook is a defect |
 | a module check says its markup "is not really visible" | the module rendered, but something is covering it | open the drawer or the accordion first, which is the narrow-screen check the checklist is asking for |
 | a whole profile fails at once, every category 403 | the customer group that profile uses has no category or module access | PrestaShop grants both per group: copy them from the default customer group before blaming the theme |
+| a section comes back mostly "needs a person", each one saying the shop has no such data | the seeder the checklist ships with was never run | `seed.php --status` names exactly what is missing, `--apply` makes it, `--undo` puts it back. A campaign that reports "this shop has no linked accessory" has reported on the shop, not on the theme |
+| a check fails on markup that is plainly on the page | the selector was guessed rather than read | `bem-inventory.mjs` prints the theme's real class names. The pager is `<button data-ps-data>` not `<a href>`, the cart line is `.cart__item`, the miniature title is `a.product-miniature__title`: none of them is what a reasonable guess produces |
+| a back office setting will not flip, or flips and does not persist | the form was driven instead of the setting | `config.php --set NAME=value` writes through the Configuration API the back office itself calls and prints the value read back. Reserve the browser for settings that have no configuration key |
+| a form saves and the value is unchanged, with no error | the click found the wrong control, and the page still shows what was typed | the real submit is usually `button[name$="[submit]"]`, and a Save matched by its words can belong to another dialog. Always read the value back from a freshly loaded page, never from the DOM that was just edited |
 | every mobile control reads "hidden by a parent" | they live in a drawer that starts closed | open the drawer first, which is the mobile check the checklist actually asks for |
 
 ## Bundled files
