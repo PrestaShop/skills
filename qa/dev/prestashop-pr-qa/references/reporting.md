@@ -53,7 +53,7 @@ In this order:
 5. the pages this PR touches: every `surfaces` entry, both sides of the shop, and what became of each one. A page that worked before and fails now is a rejection by itself, which is why this section comes before the regression net rather than inside it
 6. the regression net: the smoke pass, and in a browser run the two narrow widths. For each, say whether this PR broke it, whether it was already broken, or whether this PR fixed it. Close with one sentence naming what was really covered, such as `Regression coverage: smoke pages, plus 375 and 768 checked only for a response, visible content and sideways scrolling.` On a back-office PR, add that the narrow pass never reaches the back office: its pages carry a token that a second visit loses
 7. the honesty checks: the three hashes identical in both phases, the preconditions, the two canary readings, whether any bug assertion named markup the PR adds, and any check that had to be read twice
-8. what was not tested
+8. what was not tested, naming the `coverage.md` sections that were not run alongside the areas that were not visited. A section skipped and named is coverage a reader can judge; a section skipped in silence is not
 9. the verdict and one sentence of reasoning
 10. a pointer to `comments/`, and the artifact tree
 

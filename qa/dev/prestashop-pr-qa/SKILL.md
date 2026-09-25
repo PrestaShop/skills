@@ -79,7 +79,7 @@ Copy this checklist into your reply and tick items off as you go:
 QA progress:
 - [ ] 1. Read the PR and its linked issues
 - [ ] 2. Set up the run directory, and Playwright for a browser run
-- [ ] 3. Write scenario.js from the ticket's steps
+- [ ] 3. Write scenario.js from the ticket's steps, then widen it with references/coverage.md
 - [ ] 4. GATE: show the scenario, ask for the code from before the fix
 - [ ] 5. Measure the before phase
 - [ ] 6. GATE: ask for the PR's code
@@ -146,6 +146,8 @@ Write it from the **ticket's** steps first. Read the diff only afterwards, and o
 If the ticket is about mobile, declare `viewport: 'mobile'` in the scenario, so the bug is measured at the width where it was reported. Browser runs only. See [references/runner.md](references/runner.md).
 
 Then derive `surfaces`, the pages this PR touches on both sides of the shop, and propose the list before writing it into the scenario. On a back-office PR this is what catches the breakage the ticket never thought to mention. See [references/runner.md](references/runner.md).
+
+Then widen it with non-regression tests and edge cases. The ticket's steps say what the reporter noticed, not what the change can break, so run [references/coverage.md](references/coverage.md) over the scenario and add what applies to the diff. Name the sections you added in the report.
 
 Then check every bug assertion against the tokens the diff adds. The recipe is in [references/runner.md](references/runner.md). A bug assertion naming a class, id or attribute the PR introduces proves nothing: on the code from before the fix that selector is simply absent, the check fails, and the run claims a reproduction it never made. Rewrite it in the words of the ticket.
 
@@ -293,6 +295,7 @@ Neither voids the verdict. `phase.json` marks both as `flaky: true`, and the `be
 
 | File | What is in it |
 | --- | --- |
+| [references/coverage.md](references/coverage.md) | checklist of what to test beyond the ticket's steps, by subject: form inputs, fixture data, grids, non-browser clients, parity, errors, images, config keys, multistore, the PR's own tests, and a few greps |
 | [references/runner.md](references/runner.md) | the three probes and what each hands a scenario, the scenario template, the diff-token recipe, and the checks that pass for the wrong reason |
 | [references/prestashop.md](references/prestashop.md) | where the code sits, caches and builds, module `vendor/`, back-office tokens, one-way migrations, the PR-dependency probe |
 | [references/reporting.md](references/reporting.md) | the shape of `verdict.json`, what goes in each report, and the rules for the comment that gets pasted |
