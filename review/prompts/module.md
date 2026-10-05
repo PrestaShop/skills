@@ -40,8 +40,8 @@ or a mix. Apply the matching checks below and state the type in the summary.
 A native module runs on several Core and PHP versions at once. Flag:
 - Core APIs used without a `version_compare(_PS_VERSION_, ...)` guard when they do not exist in the oldest
   supported Core version (`ps_versions_compliancy['min']`).
-- PHP syntax above the `composer.json` PHP floor (for PHP 7.2: no typed properties, union types, `mixed`,
-  `match`, nullsafe operator, constructor promotion, `enum`, `readonly`).
+- PHP syntax above the `composer.json` PHP floor (below PHP 7.4: no typed properties; below 8.0: no union
+  types, `mixed`, `match`, nullsafe operator, constructor promotion; below 8.1: no `enum`, `readonly`).
 - Code that triggers deprecations on the newest PHP versions (null array offsets, dynamic properties, ...).
 - Raising `ps_versions_compliancy['min']`, the composer PHP constraint or `config.platform.php`: a BC decision,
   never a side effect of another change.
@@ -83,7 +83,8 @@ A native module runs on several Core and PHP versions at once. Flag:
 - Strings go through `$this->trans('...', [], 'Modules.<Modulename>.Admin|Shop')`, in English, with a domain
   matching where they are shown.
 - Config keys, tables and CSS classes are prefixed with the module's prefix.
-- JS / SCSS changes are made in the source folder (`_dev/`), not in built files only.
+- When the module has an asset build (a `_dev/` folder, webpack), JS / SCSS changes are made in the sources, not
+  in built files only.
 - No dead code, no duplicated helper, no leftover debug.
 
 ### 7. Tests and CI
@@ -93,9 +94,11 @@ Core version, PHPUnit and the JS linters. You cannot run them: **reason** about 
 code likely to fail PHPStan on the oldest or newest Core version. A bug fix without a test that fails before the
 fix is a finding, unless the PR explains why it cannot be tested.
 
-### 8. ps_facetedsearch specifics
+### 8. Module specifics
 
-Apply this section when `REPO` is `PrestaShop/ps_facetedsearch`. For another module, skip it.
+Apply only the subsection matching `REPO`; skip the others.
+
+#### PrestaShop/ps_facetedsearch
 
 - **Hot path performance**: `src/Adapter/MySQL.php` builds the facet and product queries. Flag functions applied to
   indexed columns, new joins on `stock_available` / `product_sale`, `EXISTS` / sub-queries replacing joins (they
@@ -117,6 +120,27 @@ Apply this section when `REPO` is `PrestaShop/ps_facetedsearch`. For another mod
   covers both.
 - **Version-gated features**: combination feature values need PS ≥ 9.3 and its feature flag; `CoreSearchBackport`
   must stay in sync with the Core search of each version.
+
+#### PrestaShop/productcomments
+
+- **Customer input**: the front controllers (`PostComment`, `ReportComment`, `UpdateCommentUsefulness`, `ListComments`,
+  `CommentGrade`) are open to customers and, when `PRODUCT_COMMENTS_ALLOW_GUESTS` is on, to guests. Comment title,
+  content and customer name are stored and shown to every visitor: they must be validated on input and escaped on
+  output (front templates and JS rendering the list). Any new `nofilter` or `innerHTML` on them is a **blocker**.
+- **Abuse**: posting keeps its rate limit (minimal time between comments), a customer votes once per comment on
+  usefulness and reports once; the product id and grades are cast and checked against existing products and criteria.
+- **Moderation and grades**: when moderation is on, only validated comments count in the average grade, the
+  comment count and the stars in product lists. A change to grade computing keeps all these places consistent.
+- **Two data layers**: legacy ObjectModels at the root (`ProductComment.php`, `ProductCommentCriterion.php`) and
+  Doctrine entities and repositories in `src/`. New code uses the Doctrine layer; a schema change updates both,
+  `install.sql`, uninstall and an upgrade script.
+- **Data cleanup**: deleting a product, a criterion or a customer leaves no orphan comments, grades, reports or votes.
+- **GDPR**: `actionExportGDPRData` exports and `actionDeleteGDPRCustomer` deletes any new personal data; customer
+  names shown publicly respect `PRODUCT_COMMENTS_ANONYMISATION`.
+- **SEO**: the reviews and aggregate rating markup (microdata / JSON-LD) stays valid; an invalid change loses the
+  rating stars in search results.
+- **Theme contract**: themes override the module templates (Hummingbird in `modules/productcomments/`), so template
+  variables and JS events keep their shape.
 
 ## Output format
 
@@ -175,5 +199,5 @@ Mark items as checked when compliant, leave unchecked when violated, and append 
 - [ ] Output escaped, no `nofilter` on user data, CSRF tokens kept
 - [ ] Strings translated with the module domain
 - [ ] License headers, `_PS_VERSION_` guard, `index.php` in new folders
-- [ ] Sources changed in `_dev/`, not only built files
+- [ ] Asset sources changed, not only built files (when the module has a build)
 ```
