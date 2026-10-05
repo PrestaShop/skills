@@ -60,6 +60,12 @@ skills currently available:
 | `dev`    | `prestashop-pr-qa`       | **prestashop-pr-qa**         | QA a pull request against a running environment, in a browser, on the command line or over HTTP: reproduce the bug, verify the fix, and report whether it is approved, with the recording as proof.                                                                     |
 | `dev`    | `hummingbird-theme-qa`   | **hummingbird-theme-qa**     | Run a full end-to-end test campaign on the Hummingbird theme against a given PrestaShop version, driven by the theme's own testing checklist. Reports what was checked, what was found and what nobody looked at, and refuses to build a report whose greens have no evidence behind them. |
 
+### Domain: `review`
+
+| Category | Skill Folder             | Skill Name                   | Description                                                                                                                                                       |
+| -------- | ------------------------ | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dev`    | `prestashop-pr-sandbox`  | **prestashop-pr-sandbox**    | Duplicate an upstream pull request onto a fork, with the fork's base branches synced, so AI review tools can be evaluated on it without touching the public PR. |
+
 ## 🗂️ Repository Structure
 
 The repository is organized by **application domains**. Currently, the supported
@@ -67,6 +73,7 @@ domains include:
 
 - [`autoupgrade`](#domain-autoupgrade) (Module Update Assistant)
 - [`qa`](#domain-qa) (Quality assurance on pull requests and on the Hummingbird theme)
+- [`review`](#domain-review) (Tooling for AI-assisted pull request review)
 
 _(More domains like core, specific modules, and themes will be added over
 time)._
