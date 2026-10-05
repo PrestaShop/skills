@@ -65,6 +65,7 @@ skills currently available:
 | Category | Skill Folder             | Skill Name                   | Description                                                                                                                                                       |
 | -------- | ------------------------ | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dev`    | `prestashop-pr-sandbox`  | **prestashop-pr-sandbox**    | Duplicate an upstream pull request onto a fork, with the fork's base branches synced, so AI review tools can be evaluated on it without touching the public PR. |
+| `dev`    | `prestashop-issue-sandbox` | **prestashop-issue-sandbox** | Duplicate an upstream issue onto a fork, without its labels (kept as the triage reference), so AI triage tools can be evaluated on it without touching the public issue. |
 
 The domain also holds shared pre-review prompts for the Core, native modules and themes, in [`review/prompts`](review/prompts/README.md).
 
