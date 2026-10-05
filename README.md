@@ -66,6 +66,8 @@ skills currently available:
 | -------- | ------------------------ | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dev`    | `prestashop-pr-sandbox`  | **prestashop-pr-sandbox**    | Duplicate an upstream pull request onto a fork, with the fork's base branches synced, so AI review tools can be evaluated on it without touching the public PR. |
 
+The domain also holds shared pre-review prompts for the Core, native modules and themes, in [`review/prompts`](review/prompts/README.md).
+
 ## 🗂️ Repository Structure
 
 The repository is organized by **application domains**. Currently, the supported
